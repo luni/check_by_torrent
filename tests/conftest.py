@@ -77,3 +77,22 @@ def multi_file_torrent(temp_dir: Path) -> tuple[Path, Path]:
         f.write(bencodepy.encode(torrent_data))
 
     return torrent_path, download_dir
+
+
+@pytest.fixture
+def real_sample_torrent(temp_dir: Path) -> tuple[Path, Path]:
+    """Provide a real torrent sample copied from the tests/data directory."""
+    fixtures_dir = Path(__file__).parent / "data"
+    source_torrent = fixtures_dir / "real_sample.torrent"
+    source_payload = fixtures_dir / "real_sample.bin"
+
+    target_dir = temp_dir / "real_sample"
+    target_dir.mkdir(exist_ok=True)
+
+    torrent_path = target_dir / source_torrent.name
+    payload_path = target_dir / source_payload.name
+
+    shutil.copy(source_torrent, torrent_path)
+    shutil.copy(source_payload, payload_path)
+
+    return torrent_path, payload_path

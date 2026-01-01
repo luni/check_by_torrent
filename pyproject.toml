@@ -27,27 +27,20 @@ dependencies = [
     "tqdm>=4.67.1",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "bandit[toml]>=1.9.2",
+    "ruff>=0.13.3",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pyright>=1.1.407",
+    "vulture>=2.14",
+    "xenon>=0.9.3",
+]
+
 
 [project.scripts]
 check-by-torrent = "check_by_torrent.cli:main"
-
-[tool.hatch.envs.default]
-dependencies = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.0.0",
-    "ruff>=0.3.0",
-]
-
-[tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
-test-cov = "pytest --cov=check_by_torrent --cov-report=term-missing {args:tests}"
-lint = "ruff check ."
-format = "ruff format ."
-check = [
-    "ruff check .",
-    "ruff format --check .",
-    "pytest",
-]
 
 [tool.ruff]
 line-length = 160
@@ -114,3 +107,13 @@ sort_by_size = true
 [project.urls]
 Homepage = "https://github.com/luni/check-by-torrent"
 "Bug Tracker" = "https://github.com/luni/check-by-torrent/issues"
+
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+    "--cov=check_by_torrent",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+pythonpath = ["."]

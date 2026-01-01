@@ -1,134 +1,131 @@
 # Torrent Integrity Checker
 
-A Python utility to verify the integrity of downloaded torrent files against their .torrent metadata.
+`check-by-torrent` is a Python CLI utility that validates downloaded torrent payloads against the hashes stored in their `.torrent` metadata. It surfaces missing files, piece-level corruption, and other issues before you seed or archive the data.
 
 ## Features
 
-- Verifies downloaded files against torrent hashes
-- Supports both single-file and multi-file torrents
-- Shows progress with a beautiful progress bar using `tqdm`
-- Handles large files efficiently with memory-mapped I/O
-- Provides detailed error reporting
-- Works with Python 3.9+
-- Type hints for better code quality and IDE support
+- Works with both single-file and multi-file torrents
+- Detects missing files before hashing begins
+- Streams data sequentially with chunked hashing for large payloads
+- Uses `tqdm` to display byte-accurate progress (current file, ETA, throughput)
+- Emits clear diagnostics and non-zero exit codes on failures
+- Fully typed codebase targeting Python 3.10–3.12
+
+## Requirements
+
+- Python **3.10+**
+- [`uv`](https://docs.astral.sh/uv/) for dependency management (used for all install instructions below)
 
 ## Installation
 
-### Using pip
+### Install from PyPI
 
 ```bash
-pip install check-by-torrent
+uv pip install check-by-torrent
 ```
 
-### From source
+This exposes the `check-by-torrent` command on your `PATH`.
+
+### Install from source (development)
 
 ```bash
-git clone https://github.com/yourusername/check-by-torrent.git
+git clone https://github.com/luni/check-by-torrent.git
 cd check-by-torrent
-uv pip install -e .
+uv sync --group dev
+```
+
+`uv sync` creates a virtual environment (default `.venv`) with the locked runtime plus the `dev` extras (pytest, ruff, pyright, etc.). Use `uv run <command>` to execute tools inside that environment without activating it manually.
+
+If you prefer an editable install in an existing environment:
+
+```bash
+uv pip install -e ".[dev]"
 ```
 
 ## Usage
 
-Basic usage:
-
 ```bash
-check-by-torrent path/to/your.torrent [download_path]
+check-by-torrent path/to/file.torrent [download_path]
 ```
 
-If `download_path` is not specified, the script will look for files in the current directory.
+- `path/to/file.torrent`: required `.torrent` metadata file.
+- `download_path`: optional directory or file override. If omitted, files are resolved relative to the torrent file’s directory (matching the paths stored inside the torrent).
 
 ### Examples
 
-Check a torrent in the current directory:
+Verify content in the current directory:
 
 ```bash
-check-by-torrent example.torrent
+check-by-torrent ubuntu.torrent
 ```
 
-Check a torrent with files in a specific directory:
+Verify content stored elsewhere (e.g., your downloads folder):
 
 ```bash
-check-by-torrent example.torrent /path/to/downloads
+check-by-torrent archlinux.torrent /data/downloads
+```
+
+Display CLI help/arguments:
+
+```bash
+check-by-torrent --help
 ```
 
 ## Output
 
-The script will display a progress bar showing:
-- Current progress
-- Transfer speed
-- Estimated time remaining
-- Current file being processed
+During verification the tool displays a `tqdm` progress bar containing:
 
-If any files are missing or have incorrect hashes, the script will report the errors and exit with a non-zero status code.
+- Bytes processed vs. total torrent size
+- Elapsed & estimated remaining time
+- Read throughput
+- The current file segment being hashed
 
-## Development
+On failure, the command prints actionable diagnostics (missing files, piece number with mismatched hash, expected vs. actual digest) and exits with status code `1`. A successful verification prints `Verification successful` and exits with `0`.
 
-This project uses:
-- `uv` for dependency management and running development tasks
-- `ruff` for linting and code formatting
-- `pytest` for testing
-- `pytest-cov` for test coverage reporting
+## Development workflow
 
-### Setting up the development environment
+All tooling is invoked via `uv run …` to ensure the locked environment is used:
 
-1. Install `uv` (if not already installed):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
+```bash
+# Quality gates
+uv run ruff check .
+uv run ruff format --check .
 
-2. Clone the repository and install dependencies:
-   ```bash
-   git clone https://github.com/yourusername/check-by-torrent.git
-   cd check-by-torrent
-   uv pip install -e ".[dev]"
-   ```
+# Test suite
+uv run pytest
+uv run pytest --cov=check_by_torrent --cov-report=term-missing
 
-### Development tasks
+# Static analysis (optional targets configured in the Makefile/pyproject)
+uv run pyright
+uv run bandit -c pyproject.toml -r .
+uv run xenon -b D -m B -a B .
+```
 
-- Run tests:
-  ```bash
-  uv run test
-  ```
+For a one-shot validation similar to CI you can also run:
 
-- Run tests with coverage:
-  ```bash
-  uv run test-cov
-  ```
+```bash
+uv run make validate
+```
 
-- Lint the code:
-  ```bash
-  uv run lint
-  ```
-
-- Format the code:
-  ```bash
-  uv run format
-  ```
-
-- Run all checks (lint, format, test):
-  ```bash
-  uv run check
-  ```
-
-## Project Structure
+## Project structure
 
 ```
 check-by-torrent/
-├── check_by_torrent/       # Main package
-│   ├── __init__.py         # Package initialization
-│   ├── __main__.py         # Command-line entry point
-│   ├── cli.py              # Command-line interface
-│   └── check_by_torrent.py # Core functionality
-├── tests/                  # Test files
+├── check_by_torrent/
 │   ├── __init__.py
-│   ├── conftest.py         # Test fixtures
-│   ├── test_cli.py         # CLI tests
-│   └── test_core.py        # Core functionality tests
-├── .gitignore
-├── LICENSE
-├── pyproject.toml          # Project metadata and build configuration
-└── README.md               # This file
+│   ├── __main__.py
+│   ├── cli.py
+│   └── check_by_torrent.py
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── test_cli.py
+│   └── test_core.py
+├── README.md
+├── pyproject.toml
+├── uv.lock
+├── Makefile
+└── LICENSE
 ```
 
 ## License
@@ -137,4 +134,4 @@ MIT
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Issues and pull requests are welcome—see [GitHub](https://github.com/luni/check-by-torrent) to report bugs or propose enhancements.

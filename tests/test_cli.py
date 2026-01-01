@@ -60,3 +60,31 @@ def test_cli_with_path() -> None:
                     assert excinfo.value.code == 0
                     mock_verify.assert_called_once_with(Path("test.torrent"), Path("/custom/path"))
                     mock_exit.assert_called_once_with(0)
+
+
+def test_cli_verification_failure(capsys: CaptureFixture) -> None:
+    """When verification fails, CLI should write to stderr and exit with status 1."""
+    with patch("sys.argv", ["check-by-torrent", "test.torrent"]):
+        with patch("check_by_torrent.cli.Path.exists", return_value=True):
+            with patch("check_by_torrent.cli.verify_torrent", return_value=False):
+                with patch("sys.exit", side_effect=SystemExit(1)) as mock_exit:
+                    with pytest.raises(SystemExit):
+                        main()
+                    mock_exit.assert_called_once_with(1)
+
+    captured = capsys.readouterr()
+    assert "Verification failed" in captured.err
+
+
+def test_cli_unexpected_exception(capsys: CaptureFixture) -> None:
+    """Unexpected errors from verify_torrent should be surfaced and exit with status 1."""
+    with patch("sys.argv", ["check-by-torrent", "test.torrent"]):
+        with patch("check_by_torrent.cli.Path.exists", return_value=True):
+            with patch("check_by_torrent.cli.verify_torrent", side_effect=RuntimeError("boom")):
+                with patch("sys.exit", side_effect=SystemExit(1)) as mock_exit:
+                    with pytest.raises(SystemExit):
+                        main()
+                    mock_exit.assert_called_once_with(1)
+
+    captured = capsys.readouterr()
+    assert "Error: boom" in captured.err

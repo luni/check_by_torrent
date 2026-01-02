@@ -107,27 +107,6 @@ For a one-shot validation similar to CI you can also run:
 uv run make validate
 ```
 
-## Project structure
-
-```
-check-by-torrent/
-├── check_by_torrent/
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── cli.py
-│   └── check_by_torrent.py
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py
-│   ├── test_cli.py
-│   └── test_core.py
-├── README.md
-├── pyproject.toml
-├── uv.lock
-├── Makefile
-└── LICENSE
-```
-
 ## License
 
 MIT

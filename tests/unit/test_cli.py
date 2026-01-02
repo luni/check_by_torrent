@@ -1,4 +1,4 @@
-"""Test command-line interface for check_by_torrent."""
+"""Unit tests for the CLI entry point."""
 
 from pathlib import Path
 from unittest.mock import patch

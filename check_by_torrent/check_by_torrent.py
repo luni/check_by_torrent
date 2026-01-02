@@ -10,6 +10,7 @@ import hashlib
 import os
 import sys
 from collections.abc import Generator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 
@@ -31,6 +32,53 @@ StrPath: TypeAlias = str | os.PathLike[str]
 BytesOrStrPath: TypeAlias = bytes | StrPath
 TorrentInfo = Mapping[bytes, Any]
 FileList = list[tuple[Path, int]]
+
+
+@dataclass(frozen=True)
+class VerificationContext:
+    """Prepared data required for verifying torrent pieces."""
+
+    info: TorrentInfo
+    piece_hashes: list[bytes]
+    total_length: int
+    display_name: str
+    files: FileList
+
+
+class PieceFileTracker:
+    """Track which files contribute to each piece as we iterate."""
+
+    def __init__(self, files: FileList) -> None:
+        self._files = files
+        self._index = 0
+        self._offset = 0
+
+    def advance(self, piece_size: int) -> list[Path]:
+        if piece_size == 0 or not self._files:
+            return []
+
+        affected: list[Path] = []
+        remaining = piece_size
+        index = self._index
+        offset = self._offset
+
+        while remaining > 0 and index < len(self._files):
+            file_path, file_size = self._files[index]
+            if not affected or affected[-1] != file_path:
+                affected.append(file_path)
+
+            available = file_size - offset
+            if remaining < available:
+                offset += remaining
+                remaining = 0
+            else:
+                remaining -= available
+                index += 1
+                offset = 0
+
+        self._index = index
+        self._offset = offset
+        return affected
 
 
 class TorrentError(Exception):
@@ -178,92 +226,102 @@ def verify_torrent(torrent_path: str | os.PathLike, alt_path: BytesOrStrPath | N
 
     """
     try:
-        # Read and parse the torrent file
-        torrent_file = Path(torrent_path)
-        if not torrent_file.is_file():
-            print(f"Error: Torrent file not found: {torrent_path}", file=sys.stderr)
-            return False
-
-        with torrent_file.open("rb") as f:
-            metainfo = cast(dict[bytes, Any], bencodepy.decode(f.read()))
-
-        info = cast(TorrentInfo, metainfo[b"info"])
-        pieces = info[b"pieces"]
-        piece_hashes = [pieces[i : i + SHA1_LENGTH] for i in range(0, len(pieces), SHA1_LENGTH)]
-        total_length = calculate_total_length(info)
-        name = info[b"name"].decode("utf-8", errors="replace")
-        files = get_files(info, alt_path)
-
-        # Initialize progress bar
-        pbar = tqdm(
-            total=total_length,
+        context = _prepare_verification_context(torrent_path, alt_path)
+        with tqdm(
+            total=context.total_length,
             unit="B",
             unit_scale=True,
             unit_divisor=1024,
-            desc=f"Verifying {name[:30]}",
+            desc=f"Verifying {context.display_name[:30]}",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
-        )
-
-        current_file = None
-        bytes_processed = 0
-        missing_files = []
-
-        # Check for missing files first
-        for file_path, _file_size in files:
-            if not file_path.is_file():
-                missing_files.append(str(file_path))
-
-        if missing_files:
-            pbar.write("\nError: The following files are missing:")
-            for f in missing_files:
-                pbar.write(f"  - {f}")
-            return False
-
-        # Track current file for progress display
-        file_index = 0
-        current_file = files[file_index][0] if files else None
-        current_file_end = files[file_index][1] if files else 0
-        current_file_pos = 0
-
-        # Verify each piece
-        for i, (piece, expected_hash) in enumerate(zip(pieces_generator(info, alt_path), piece_hashes, strict=False)):
-            # Update current file for progress display
-            piece_len = len(piece)
-            current_file_pos += piece_len
-
-            # Move to next file if we've passed the current one
-            while file_index < len(files) - 1 and current_file_pos >= current_file_end:
-                file_index += 1
-                current_file = files[file_index][0]
-                current_file_pos = 0
-                current_file_end = files[file_index][1]
-
-            # Update progress bar with current file
-            if current_file:
-                pbar.set_postfix(file=current_file.name[:SHA1_LENGTH] + "..." if len(current_file.name) > SHA1_LENGTH else current_file.name)
-
-            actual_hash = hashlib.sha1(piece).digest()
-            if actual_hash != expected_hash:
-                pbar.write(f"\nError: Hash mismatch at piece {i}")
-                if current_file:
-                    pbar.write(f"Current file: {current_file}")
-                pbar.write(f"Expected hash: {expected_hash.hex()}")
-                pbar.write(f"Actual hash:   {actual_hash.hex()}")
+        ) as pbar:
+            missing_files = _collect_missing_files(context.files)
+            if missing_files:
+                _report_missing_files(pbar, missing_files)
                 return False
-
-            bytes_processed += piece_len
-            pbar.update(piece_len)
-
-        pbar.set_postfix(file="")
-        pbar.close()
-
-        # Verify we've checked all pieces
-        if bytes_processed != total_length:
-            pbar.write(f"\nError: Expected {human_readable_size(total_length)} but processed {human_readable_size(bytes_processed)}")
-            return False
-
-        return True
-
+            return _verify_pieces_with_context(context, alt_path, pbar)
+    except TorrentError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"\nError during verification: {e}", file=sys.stderr)
         return False
+
+
+def _prepare_verification_context(torrent_path: str | os.PathLike, alt_path: BytesOrStrPath | None) -> VerificationContext:
+    torrent_file = Path(torrent_path)
+    if not torrent_file.is_file():
+        raise TorrentError(f"Torrent file not found: {torrent_path}")
+
+    with torrent_file.open("rb") as f:
+        metainfo = cast(dict[bytes, Any], bencodepy.decode(f.read()))
+
+    info = cast(TorrentInfo, metainfo[b"info"])
+    pieces = info[b"pieces"]
+    piece_hashes = [pieces[i : i + SHA1_LENGTH] for i in range(0, len(pieces), SHA1_LENGTH)]
+    total_length = calculate_total_length(info)
+    name = info[b"name"].decode("utf-8", errors="replace")
+    files = get_files(info, alt_path)
+    return VerificationContext(info=info, piece_hashes=piece_hashes, total_length=total_length, display_name=name, files=files)
+
+
+def _collect_missing_files(files: FileList) -> list[str]:
+    return [str(file_path) for file_path, _ in files if not file_path.is_file()]
+
+
+def _report_missing_files(pbar: tqdm, missing_files: list[str]) -> None:
+    pbar.write("\nError: The following files are missing:")
+    for path in missing_files:
+        pbar.write(f"  - {path}")
+
+
+def _verify_pieces_with_context(context: VerificationContext, alt_path: BytesOrStrPath | None, pbar: tqdm) -> bool:
+    tracker = PieceFileTracker(context.files)
+    bytes_processed = 0
+
+    for i, (piece, expected_hash) in enumerate(zip(pieces_generator(context.info, alt_path), context.piece_hashes, strict=False)):
+        piece_len = len(piece)
+        piece_files = tracker.advance(piece_len)
+        _update_progress_postfix(pbar, piece_files)
+
+        actual_hash = hashlib.sha1(piece).digest()
+        if actual_hash != expected_hash:
+            _report_hash_mismatch(pbar, i, piece_files, expected_hash, actual_hash)
+            return False
+
+        bytes_processed += piece_len
+        pbar.update(piece_len)
+
+    pbar.set_postfix(file="")
+
+    if bytes_processed != context.total_length:
+        pbar.write(
+            f"\nError: Expected {human_readable_size(context.total_length)} but processed {human_readable_size(bytes_processed)}",
+        )
+        return False
+
+    return True
+
+
+def _update_progress_postfix(pbar: tqdm, piece_files: list[Path]) -> None:
+    if not piece_files:
+        pbar.set_postfix(file="")
+        return
+
+    display_name = piece_files[-1].name
+    truncated = (display_name[:SHA1_LENGTH] + "...") if len(display_name) > SHA1_LENGTH else display_name
+    pbar.set_postfix(file=truncated)
+
+
+def _report_hash_mismatch(pbar: tqdm, piece_index: int, piece_files: list[Path], expected_hash: bytes, actual_hash: bytes) -> None:
+    pbar.write(f"\nError: Hash mismatch at piece {piece_index}")
+    if not piece_files:
+        pbar.write("No file mapping available for this piece.")
+    elif len(piece_files) == 1:
+        pbar.write(f"Potentially corrupted file: {piece_files[0]}")
+    else:
+        pbar.write("Piece spans multiple files; potentially corrupted files:")
+        for file_path in piece_files:
+            pbar.write(f"  - {file_path}")
+    pbar.write(f"Expected hash: {expected_hash.hex()}")
+    pbar.write(f"Actual hash:   {actual_hash.hex()}")

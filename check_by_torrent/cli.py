@@ -55,7 +55,9 @@ def main() -> None:
             delete_orphans=args.delete_orphans,
             continue_on_error=args.continue_on_error,
         ):
-            print("Verification successful")
+            orphan_mode = args.list_orphans or args.delete_orphans
+            if not orphan_mode:
+                print("Verification successful")
             sys.exit(0)
 
         print("Verification failed", file=sys.stderr)

@@ -255,6 +255,8 @@ def verify_torrent(
                 delete_orphans=delete_orphans,
             )
 
+        missing_detected = False
+
         with tqdm(
             total=context.total_length,
             unit="B",
@@ -266,14 +268,18 @@ def verify_torrent(
             missing_files = _collect_missing_files(context.files)
             if missing_files:
                 _report_missing_files(pbar, missing_files)
-                return False
+                if not continue_on_error:
+                    return False
+                missing_detected = True
+                pbar.write("\nContinuing despite missing files (--continue-on-error).")
 
-            return _verify_pieces_with_context(
+            hashes_ok = _verify_pieces_with_context(
                 context,
                 alt_path,
                 pbar,
                 continue_on_hash_mismatch=continue_on_error,
             )
+        return hashes_ok and not missing_detected
     except TorrentError as e:
         print(f"Error: {e}", file=sys.stderr)
         return False

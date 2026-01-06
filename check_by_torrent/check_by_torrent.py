@@ -12,7 +12,7 @@ import sys
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, cast
 
 import bencodepy
 from tqdm import tqdm
@@ -214,6 +214,17 @@ def human_readable_size(size: int) -> str:
     return f"{size_float:.1f} PB"
 
 
+class _Writer(Protocol):
+    def write(self, message: str) -> None: ...
+
+
+class _PlainWriter:
+    """Minimal writer proxy to reuse orphan handling without tqdm."""
+
+    def write(self, message: str) -> None:
+        print(message)
+
+
 def verify_torrent(
     torrent_path: str | os.PathLike,
     alt_path: BytesOrStrPath | None = None,
@@ -235,6 +246,15 @@ def verify_torrent(
     try:
         context = _prepare_verification_context(torrent_path, alt_path)
         orphan_mode = list_orphans or delete_orphans
+        if orphan_mode:
+            return _handle_orphaned_files(
+                context,
+                alt_path,
+                _PlainWriter(),
+                list_orphans=list_orphans,
+                delete_orphans=delete_orphans,
+            )
+
         with tqdm(
             total=context.total_length,
             unit="B",
@@ -243,15 +263,6 @@ def verify_torrent(
             desc=f"Verifying {context.display_name[:30]}",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
         ) as pbar:
-            if orphan_mode:
-                return _handle_orphaned_files(
-                    context,
-                    alt_path,
-                    pbar,
-                    list_orphans=list_orphans,
-                    delete_orphans=delete_orphans,
-                )
-
             missing_files = _collect_missing_files(context.files)
             if missing_files:
                 _report_missing_files(pbar, missing_files)
@@ -363,7 +374,7 @@ def _report_hash_mismatch(pbar: tqdm, piece_index: int, piece_files: list[Path],
 def _handle_orphaned_files(
     context: VerificationContext,
     alt_path: BytesOrStrPath | None,
-    pbar: tqdm,
+    writer: _Writer,
     *,
     list_orphans: bool,
     delete_orphans: bool,
@@ -371,30 +382,30 @@ def _handle_orphaned_files(
     if not (list_orphans or delete_orphans):
         return True
     if b"files" not in context.info:
-        pbar.write("\nError: Orphan detection is only available for multi-file torrents.")
+        writer.write("\nError: Orphan detection is only available for multi-file torrents.")
         return False
 
     root_path = _resolve_target_root(context.info, alt_path)
     if not root_path.exists():
-        pbar.write(f"\nWarning: Target folder '{root_path}' does not exist; skipping orphan detection.")
+        writer.write(f"\nWarning: Target folder '{root_path}' does not exist; skipping orphan detection.")
         return False
     if not root_path.is_dir():
-        pbar.write(f"\nWarning: Target path '{root_path}' is not a directory; skipping orphan detection.")
+        writer.write(f"\nWarning: Target path '{root_path}' is not a directory; skipping orphan detection.")
         return False
 
     orphans = _identify_orphan_files(root_path, context.files)
     if not orphans:
-        pbar.write("\nNo orphaned files detected.")
+        writer.write("\nNo orphaned files detected.")
         return True
 
     if list_orphans or delete_orphans:
-        pbar.write("\nOrphaned files detected:")
+        writer.write("\nOrphaned files detected:")
         for path in orphans:
-            pbar.write(f"  - {path}")
+            writer.write(f"  - {path}")
 
     if delete_orphans:
-        deleted = _delete_orphan_files(orphans, pbar)
-        pbar.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
+        deleted = _delete_orphan_files(orphans, writer)
+        writer.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
 
     return True
 
@@ -421,15 +432,15 @@ def _identify_orphan_files(root_path: Path, files: FileList) -> list[Path]:
     return orphans
 
 
-def _delete_orphan_files(orphans: list[Path], pbar: tqdm) -> int:
+def _delete_orphan_files(orphans: list[Path], writer: _Writer) -> int:
     deleted = 0
     for path in orphans:
         try:
-            pbar.write(f"Deleting orphaned file: {path}")
+            writer.write(f"Deleting orphaned file: {path}")
             path.unlink()
             deleted += 1
         except OSError as exc:
-            pbar.write(f"Failed to delete {path}: {exc}")
+            writer.write(f"Failed to delete {path}: {exc}")
     return deleted
 
 

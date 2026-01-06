@@ -244,9 +244,15 @@ def verify_torrent(
             if missing_files:
                 _report_missing_files(pbar, missing_files)
                 return False
-            if b"files" in context.info:
+            manage_orphans = b"files" in context.info
+            if manage_orphans:
                 _handle_orphaned_files(context, alt_path, pbar, delete_orphans)
-            return _verify_pieces_with_context(context, alt_path, pbar)
+            return _verify_pieces_with_context(
+                context,
+                alt_path,
+                pbar,
+                continue_on_hash_mismatch=manage_orphans,
+            )
     except TorrentError as e:
         print(f"Error: {e}", file=sys.stderr)
         return False
@@ -282,9 +288,16 @@ def _report_missing_files(pbar: tqdm, missing_files: list[str]) -> None:
         pbar.write(f"  - {path}")
 
 
-def _verify_pieces_with_context(context: VerificationContext, alt_path: BytesOrStrPath | None, pbar: tqdm) -> bool:
+def _verify_pieces_with_context(
+    context: VerificationContext,
+    alt_path: BytesOrStrPath | None,
+    pbar: tqdm,
+    *,
+    continue_on_hash_mismatch: bool = False,
+) -> bool:
     tracker = PieceFileTracker(context.files)
     bytes_processed = 0
+    verification_failed = False
 
     for i, (piece, expected_hash) in enumerate(zip(pieces_generator(context.info, alt_path), context.piece_hashes, strict=False)):
         piece_len = len(piece)
@@ -292,12 +305,15 @@ def _verify_pieces_with_context(context: VerificationContext, alt_path: BytesOrS
         _update_progress_postfix(pbar, piece_files)
 
         actual_hash = hashlib.sha1(piece).digest()
-        if actual_hash != expected_hash:
-            _report_hash_mismatch(pbar, i, piece_files, expected_hash, actual_hash)
-            return False
-
         bytes_processed += piece_len
         pbar.update(piece_len)
+
+        if actual_hash != expected_hash:
+            _report_hash_mismatch(pbar, i, piece_files, expected_hash, actual_hash)
+            verification_failed = True
+            if not continue_on_hash_mismatch:
+                return False
+            continue
 
     pbar.set_postfix(file="")
 
@@ -307,7 +323,7 @@ def _verify_pieces_with_context(context: VerificationContext, alt_path: BytesOrS
         )
         return False
 
-    return True
+    return not verification_failed
 
 
 def _update_progress_postfix(pbar: tqdm, piece_files: list[Path]) -> None:

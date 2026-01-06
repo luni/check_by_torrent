@@ -15,6 +15,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=("Verify the integrity of downloaded torrent files against their .torrent metadata"))
     parser.add_argument("torrent_file", help="Path to the .torrent file")
     parser.add_argument("path", nargs="?", help="Path to the downloaded files (default: same as torrent file directory)")
+    parser.add_argument(
+        "--delete-orphans",
+        action="store_true",
+        help="Delete files in the target folder that are not part of the torrent (multi-file torrents only)",
+    )
     return parser.parse_args()
 
 
@@ -29,7 +34,11 @@ def main() -> None:
             print(f"Error: Torrent file '{torrent_path}' not found", file=sys.stderr)
             sys.exit(1)
 
-        if verify_torrent(torrent_path, path):
+        if verify_torrent(
+            torrent_path,
+            path,
+            delete_orphans=args.delete_orphans,
+        ):
             print("Verification successful")
             sys.exit(0)
 

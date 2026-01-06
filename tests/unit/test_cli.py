@@ -44,7 +44,11 @@ def test_cli_success() -> None:
                     with pytest.raises(SystemExit) as excinfo:
                         main()
                     assert excinfo.value.code == 0
-                    mock_verify.assert_called_once_with(Path("test.torrent"), None)
+                    mock_verify.assert_called_once_with(
+                        Path("test.torrent"),
+                        None,
+                        delete_orphans=False,
+                    )
                     mock_exit.assert_called_once_with(0)
 
 
@@ -58,7 +62,11 @@ def test_cli_with_path() -> None:
                     with pytest.raises(SystemExit) as excinfo:
                         main()
                     assert excinfo.value.code == 0
-                    mock_verify.assert_called_once_with(Path("test.torrent"), Path("/custom/path"))
+                    mock_verify.assert_called_once_with(
+                        Path("test.torrent"),
+                        Path("/custom/path"),
+                        delete_orphans=False,
+                    )
                     mock_exit.assert_called_once_with(0)
 
 

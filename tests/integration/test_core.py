@@ -97,6 +97,31 @@ def test_verify_torrent_missing_torrent_file(tmp_path: Path) -> None:
     assert verify_torrent(str(tmp_path / "missing.torrent")) is False
 
 
+def test_verify_torrent_lists_orphans(multi_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+    """Listing orphans should report unexpected files and still verify successfully."""
+    torrent_path, download_dir = multi_file_torrent
+    orphan = download_dir / "orphan.bin"
+    orphan.write_bytes(b"orphan")
+
+    assert verify_torrent(str(torrent_path), download_dir) is True
+    combined = "".join(capsys.readouterr())
+    assert "Orphaned files detected" in combined
+    assert str(orphan) in combined
+
+
+def test_verify_torrent_deletes_orphans(multi_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+    """Deletion flag should remove orphan files and report progress."""
+    torrent_path, download_dir = multi_file_torrent
+    orphan = download_dir / "delete_me.bin"
+    orphan.write_bytes(b"remove me")
+
+    assert verify_torrent(str(torrent_path), download_dir, delete_orphans=True) is True
+    combined = "".join(capsys.readouterr())
+    assert "Deleting orphaned file" in combined
+    assert "Removed 1 orphaned file" in combined
+    assert not orphan.exists()
+
+
 def test_verify_torrent_length_mismatch(monkeypatch: pytest.MonkeyPatch, single_file_torrent: tuple[Path, Path]) -> None:
     """If not all bytes are processed, verification should fail."""
     torrent_path, file_path = single_file_torrent

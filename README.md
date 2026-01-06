@@ -6,6 +6,7 @@
 
 - Works with both single-file and multi-file torrents
 - Detects missing files before hashing begins
+- Lists or prunes orphaned payload files in multi-file torrents
 - Streams data sequentially with chunked hashing for large payloads
 - Uses `tqdm` to display byte-accurate progress (current file, ETA, throughput)
 - Emits clear diagnostics and non-zero exit codes on failures
@@ -70,6 +71,20 @@ Display CLI help/arguments:
 ```bash
 check-by-torrent --help
 ```
+
+### Orphan management (multi-file torrents)
+
+Sometimes the download directory accumulates stray files that are not described by the torrent metadata. You can list or delete those files while verifying:
+
+```bash
+# Show extra files relative to the torrent payload
+check-by-torrent my_collection.torrent /data/torrents --list-orphans
+
+# Remove the extra files after listing them
+check-by-torrent my_collection.torrent /data/torrents --delete-orphans
+```
+
+`--delete-orphans` automatically implies `--list-orphans` so you always see what was removed. For safety this feature only applies to multi-file torrents and requires the target directory to exist.
 
 ## Output
 

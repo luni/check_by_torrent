@@ -214,7 +214,12 @@ def human_readable_size(size: int) -> str:
     return f"{size_float:.1f} PB"
 
 
-def verify_torrent(torrent_path: str | os.PathLike, alt_path: BytesOrStrPath | None = None) -> bool:
+def verify_torrent(
+    torrent_path: str | os.PathLike,
+    alt_path: BytesOrStrPath | None = None,
+    *,
+    delete_orphans: bool = False,
+) -> bool:
     """Verify the integrity of a torrent download.
 
     Args:
@@ -239,6 +244,8 @@ def verify_torrent(torrent_path: str | os.PathLike, alt_path: BytesOrStrPath | N
             if missing_files:
                 _report_missing_files(pbar, missing_files)
                 return False
+            if b"files" in context.info:
+                _handle_orphaned_files(context, alt_path, pbar, delete_orphans)
             return _verify_pieces_with_context(context, alt_path, pbar)
     except TorrentError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -325,3 +332,75 @@ def _report_hash_mismatch(pbar: tqdm, piece_index: int, piece_files: list[Path],
             pbar.write(f"  - {file_path}")
     pbar.write(f"Expected hash: {expected_hash.hex()}")
     pbar.write(f"Actual hash:   {actual_hash.hex()}")
+
+
+def _handle_orphaned_files(
+    context: VerificationContext,
+    alt_path: BytesOrStrPath | None,
+    pbar: tqdm,
+    delete_orphans: bool,
+) -> None:
+    if b"files" not in context.info:
+        return
+
+    root_path = _resolve_target_root(context.info, alt_path)
+    if not root_path.exists():
+        pbar.write(f"\nWarning: Target folder '{root_path}' does not exist; skipping orphan detection.")
+        return
+    if not root_path.is_dir():
+        pbar.write(f"\nWarning: Target path '{root_path}' is not a directory; skipping orphan detection.")
+        return
+
+    orphans = _identify_orphan_files(root_path, context.files)
+    if not orphans:
+        pbar.write("\nNo orphaned files detected.")
+        return
+
+    pbar.write("\nOrphaned files detected:")
+    for path in orphans:
+        pbar.write(f"  - {path}")
+
+    if delete_orphans:
+        deleted = _delete_orphan_files(orphans, pbar)
+        pbar.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
+
+
+def _resolve_target_root(info: TorrentInfo, alt_path: BytesOrStrPath | None) -> Path:
+    if alt_path is not None:
+        return _coerce_path(alt_path)
+    try:
+        return Path(info[b"name"].decode("utf-8"))
+    except KeyError as e:
+        raise TorrentError("Invalid torrent info: missing name") from e
+
+
+def _identify_orphan_files(root_path: Path, files: FileList) -> list[Path]:
+    expected_paths = {_normalize_path(file_path) for file_path, _ in files}
+    orphans: list[Path] = []
+
+    for candidate in root_path.rglob("*"):
+        if not candidate.is_file():
+            continue
+        normalized_candidate = _normalize_path(candidate)
+        if normalized_candidate not in expected_paths:
+            orphans.append(candidate)
+    return orphans
+
+
+def _delete_orphan_files(orphans: list[Path], pbar: tqdm) -> int:
+    deleted = 0
+    for path in orphans:
+        try:
+            pbar.write(f"Deleting orphaned file: {path}")
+            path.unlink()
+            deleted += 1
+        except OSError as exc:
+            pbar.write(f"Failed to delete {path}: {exc}")
+    return deleted
+
+
+def _normalize_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()

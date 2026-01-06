@@ -54,21 +54,32 @@ def multi_file_torrent(temp_dir: Path) -> tuple[Path, Path]:
     """Create a multi-file torrent for testing."""
     # Create test files in a directory
     download_dir = temp_dir / "downloads"
+    if download_dir.exists():
+        shutil.rmtree(download_dir)
     download_dir.mkdir()
 
     files = []
+    combined = bytearray()
+    piece_length = 16384  # 16KB pieces
     for i in range(3):
         file_path = download_dir / f"file_{i}.bin"
-        file_path.write_bytes(f"Test content for file {i}".encode() * 1000)
-        files.append({b"path": [f"file_{i}.bin".encode()], b"length": file_path.stat().st_size})
+        content = (f"Test content for file {i}".encode()) * 1000
+        file_path.write_bytes(content)
+        files.append({b"path": [f"file_{i}.bin".encode()], b"length": len(content)})
+        combined.extend(content)
+
+    pieces = bytearray()
+    for i in range(0, len(combined), piece_length):
+        piece = combined[i : i + piece_length]
+        pieces.extend(hashlib.sha1(piece).digest())
 
     # Create a simple .torrent file for multi-file torrent
     torrent_data = {
         b"info": {
             b"name": b"test_files",
-            b"piece length": 16384,  # 16KB pieces
+            b"piece length": piece_length,
             b"files": files,
-            b"pieces": hashlib.sha1(b"".join(f[b"path"][0] for f in files)).digest(),
+            b"pieces": bytes(pieces),
         }
     }
 

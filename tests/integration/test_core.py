@@ -6,6 +6,7 @@ from pathlib import Path
 
 import bencodepy
 import pytest
+from tqdm import tqdm
 
 from check_by_torrent import check_by_torrent as cbt
 from check_by_torrent.check_by_torrent import verify_torrent
@@ -103,10 +104,25 @@ def test_verify_torrent_lists_orphans(multi_file_torrent: tuple[Path, Path], cap
     orphan = download_dir / "orphan.bin"
     orphan.write_bytes(b"orphan")
 
-    assert verify_torrent(str(torrent_path), download_dir) is True
+    assert verify_torrent(str(torrent_path), download_dir, list_orphans=True) is True
     combined = "".join(capsys.readouterr())
     assert "Orphaned files detected" in combined
     assert str(orphan) in combined
+
+
+def test_verify_torrent_orphan_mode_ignores_missing_payload(multi_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+    """Orphan listing should not fail when expected files are missing."""
+    torrent_path, download_dir = multi_file_torrent
+    missing = download_dir / "file_0.bin"
+    if missing.exists():
+        missing.unlink()
+    orphan = download_dir / "extra.bin"
+    orphan.write_bytes(b"extra")
+
+    assert verify_torrent(str(torrent_path), download_dir, list_orphans=True) is True
+    combined = "".join(capsys.readouterr())
+    assert str(orphan) in combined
+    assert "No orphaned files detected" not in combined
 
 
 def test_verify_torrent_deletes_orphans(multi_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
@@ -120,6 +136,34 @@ def test_verify_torrent_deletes_orphans(multi_file_torrent: tuple[Path, Path], c
     assert "Deleting orphaned file" in combined
     assert "Removed 1 orphaned file" in combined
     assert not orphan.exists()
+
+
+def test_verify_torrent_continue_on_error_reports_all_mismatches(
+    single_file_torrent: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """continue_on_error should keep hashing and record every mismatch."""
+    torrent_path, file_path = single_file_torrent
+    file_path.write_bytes(b"\x00" * file_path.stat().st_size)
+
+    min_expected_mismatches = 2
+    observed: list[int] = []
+    original_report = cbt._report_hash_mismatch
+
+    def recorder(
+        pbar: tqdm,
+        piece_index: int,
+        piece_files: list[Path],
+        expected_hash: bytes,
+        actual_hash: bytes,
+    ) -> None:
+        observed.append(piece_index)
+        original_report(pbar, piece_index, piece_files, expected_hash, actual_hash)
+
+    monkeypatch.setattr(cbt, "_report_hash_mismatch", recorder)
+    result = verify_torrent(str(torrent_path), file_path.parent, continue_on_error=True)
+    assert result is False
+    assert len(observed) >= min_expected_mismatches
 
 
 def test_verify_torrent_length_mismatch(monkeypatch: pytest.MonkeyPatch, single_file_torrent: tuple[Path, Path]) -> None:

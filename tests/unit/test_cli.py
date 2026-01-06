@@ -1,5 +1,6 @@
 """Unit tests for the CLI entry point."""
 
+import runpy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,7 +48,9 @@ def test_cli_success() -> None:
                     mock_verify.assert_called_once_with(
                         Path("test.torrent"),
                         None,
+                        list_orphans=False,
                         delete_orphans=False,
+                        continue_on_error=False,
                     )
                     mock_exit.assert_called_once_with(0)
 
@@ -65,7 +68,9 @@ def test_cli_with_path() -> None:
                     mock_verify.assert_called_once_with(
                         Path("test.torrent"),
                         Path("/custom/path"),
+                        list_orphans=False,
                         delete_orphans=False,
+                        continue_on_error=False,
                     )
                     mock_exit.assert_called_once_with(0)
 
@@ -96,3 +101,62 @@ def test_cli_unexpected_exception(capsys: CaptureFixture) -> None:
 
     captured = capsys.readouterr()
     assert "Error: boom" in captured.err
+
+
+def test_cli_delete_orphans_implies_list(capsys: CaptureFixture) -> None:
+    """--delete-orphans should imply listing and pass both flags to verifier."""
+    with patch(
+        "sys.argv",
+        ["check-by-torrent", "test.torrent", "--delete-orphans"],
+    ):
+        with patch("check_by_torrent.cli.Path.exists", return_value=True):
+            with patch("check_by_torrent.cli.verify_torrent") as mock_verify:
+                mock_verify.return_value = True
+                with patch("sys.exit", side_effect=SystemExit(0)):
+                    with pytest.raises(SystemExit):
+                        main()
+
+    captured = capsys.readouterr()
+    assert "implies --list-orphans" in captured.err
+    mock_verify.assert_called_once_with(
+        Path("test.torrent"),
+        None,
+        list_orphans=True,
+        delete_orphans=True,
+        continue_on_error=False,
+    )
+
+
+def test_cli_continue_on_error_flag() -> None:
+    """--continue-on-error should forward flag to verifier."""
+    with patch(
+        "sys.argv",
+        ["check-by-torrent", "test.torrent", "--continue-on-error"],
+    ):
+        with patch("check_by_torrent.cli.Path.exists", return_value=True):
+            with patch("check_by_torrent.cli.verify_torrent") as mock_verify:
+                mock_verify.return_value = True
+                with patch("sys.exit", side_effect=SystemExit(0)):
+                    with pytest.raises(SystemExit):
+                        main()
+
+    mock_verify.assert_called_once_with(
+        Path("test.torrent"),
+        None,
+        list_orphans=False,
+        delete_orphans=False,
+        continue_on_error=True,
+    )
+
+
+def test_module_entrypoint_invokes_cli_main(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Running `python -m check_by_torrent` should delegate to the CLI main."""
+    called = False
+
+    def fake_main() -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("check_by_torrent.cli.main", fake_main)
+    runpy.run_module("check_by_torrent", run_name="__main__")
+    assert called is True

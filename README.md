@@ -80,11 +80,21 @@ Sometimes the download directory accumulates stray files that are not described 
 # Show extra files relative to the torrent payload
 check-by-torrent my_collection.torrent /data/torrents --list-orphans
 
-# Remove the extra files after listing them
+# Remove (and implicitly list) the extra files
 check-by-torrent my_collection.torrent /data/torrents --delete-orphans
 ```
 
-`--delete-orphans` automatically implies `--list-orphans` so you always see what was removed. For safety this feature only applies to multi-file torrents and requires the target directory to exist.
+`--delete-orphans` automatically implies `--list-orphans` so you always see what was removed. When either flag is provided the tool switches into "orphan-only" mode, meaning it skips the hash verification step and just inspects the target directory. For safety this feature only applies to multi-file torrents and requires the target directory to exist.
+
+### Continue on error
+
+To inspect every piece mismatch instead of stopping at the first failure, use:
+
+```bash
+check-by-torrent my_collection.torrent /data/torrents --continue-on-error
+```
+
+This keeps hashing after each mismatch so you get a full list of corrupted pieces. (In orphan-only mode this flag is ignored because hashing is skipped entirely.)
 
 ## Output
 

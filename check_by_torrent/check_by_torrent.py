@@ -218,7 +218,9 @@ def verify_torrent(
     torrent_path: str | os.PathLike,
     alt_path: BytesOrStrPath | None = None,
     *,
+    list_orphans: bool = False,
     delete_orphans: bool = False,
+    continue_on_error: bool = False,
 ) -> bool:
     """Verify the integrity of a torrent download.
 
@@ -232,6 +234,7 @@ def verify_torrent(
     """
     try:
         context = _prepare_verification_context(torrent_path, alt_path)
+        orphan_mode = list_orphans or delete_orphans
         with tqdm(
             total=context.total_length,
             unit="B",
@@ -240,18 +243,25 @@ def verify_torrent(
             desc=f"Verifying {context.display_name[:30]}",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
         ) as pbar:
+            if orphan_mode:
+                return _handle_orphaned_files(
+                    context,
+                    alt_path,
+                    pbar,
+                    list_orphans=list_orphans,
+                    delete_orphans=delete_orphans,
+                )
+
             missing_files = _collect_missing_files(context.files)
             if missing_files:
                 _report_missing_files(pbar, missing_files)
                 return False
-            manage_orphans = b"files" in context.info
-            if manage_orphans:
-                _handle_orphaned_files(context, alt_path, pbar, delete_orphans)
+
             return _verify_pieces_with_context(
                 context,
                 alt_path,
                 pbar,
-                continue_on_hash_mismatch=manage_orphans,
+                continue_on_hash_mismatch=continue_on_error,
             )
     except TorrentError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -354,31 +364,39 @@ def _handle_orphaned_files(
     context: VerificationContext,
     alt_path: BytesOrStrPath | None,
     pbar: tqdm,
+    *,
+    list_orphans: bool,
     delete_orphans: bool,
-) -> None:
+) -> bool:
+    if not (list_orphans or delete_orphans):
+        return True
     if b"files" not in context.info:
-        return
+        pbar.write("\nError: Orphan detection is only available for multi-file torrents.")
+        return False
 
     root_path = _resolve_target_root(context.info, alt_path)
     if not root_path.exists():
         pbar.write(f"\nWarning: Target folder '{root_path}' does not exist; skipping orphan detection.")
-        return
+        return False
     if not root_path.is_dir():
         pbar.write(f"\nWarning: Target path '{root_path}' is not a directory; skipping orphan detection.")
-        return
+        return False
 
     orphans = _identify_orphan_files(root_path, context.files)
     if not orphans:
         pbar.write("\nNo orphaned files detected.")
-        return
+        return True
 
-    pbar.write("\nOrphaned files detected:")
-    for path in orphans:
-        pbar.write(f"  - {path}")
+    if list_orphans or delete_orphans:
+        pbar.write("\nOrphaned files detected:")
+        for path in orphans:
+            pbar.write(f"  - {path}")
 
     if delete_orphans:
         deleted = _delete_orphan_files(orphans, pbar)
         pbar.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
+
+    return True
 
 
 def _resolve_target_root(info: TorrentInfo, alt_path: BytesOrStrPath | None) -> Path:

@@ -259,6 +259,7 @@ class PieceVerificationOptions:
     continue_on_hash_mismatch: bool = False
     mark_incomplete_prefix: str | None = None
     resolved_files: list[tuple[Path, int]] | None = None
+    allow_length_mismatch: bool = False
 
 
 def verify_torrent(
@@ -317,6 +318,7 @@ def verify_torrent(
                 continue_on_hash_mismatch=options.continue_on_error,
                 mark_incomplete_prefix=options.mark_incomplete_prefix if not options.continue_on_error else None,
                 resolved_files=resolved_files,
+                allow_length_mismatch=bool(missing_files) if options.continue_on_error else False,
             )
             hashes_ok = _verify_pieces_with_context(
                 context,
@@ -467,7 +469,8 @@ def _verify_pieces_with_context(
 
     pbar.set_postfix(file="")
 
-    if bytes_processed != context.total_length:
+    # Allow length mismatch when continuing despite missing files
+    if bytes_processed != context.total_length and not piece_options.allow_length_mismatch:
         pbar.write(
             f"\nError: Expected {human_readable_size(context.total_length)} but processed {human_readable_size(bytes_processed)}",
         )

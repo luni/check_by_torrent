@@ -16,6 +16,7 @@ from check_by_torrent.check_by_torrent import (
     _normalize_path,
     _rename_incomplete_file,
     _report_hash_mismatch,
+    _resolve_file_paths,
     _resolve_target_root,
     _update_progress_postfix,
 )
@@ -130,6 +131,23 @@ class TestCollectMissingFiles:
         # file1 should be missing since parent directory doesn't exist
         assert len(missing) == 1
         assert file1 in missing
+
+    def test_resolve_file_paths_with_missing_parent_directory(self, temp_dir: Path) -> None:
+        """Test that files in missing parent directories are not resolved to incomplete variants."""
+        # Create a file path with missing parent directory
+        file1 = temp_dir / "missing_dir" / "file1.bin"
+
+        # Create incomplete file in wrong location (parent missing)
+        incomplete_file = temp_dir / "incomplete.missing_dir" / "file1.bin"
+        incomplete_file.parent.mkdir(parents=True)
+        incomplete_file.write_bytes(b"content")
+
+        files = [(file1, 8)]
+        resolved = _resolve_file_paths(files)
+
+        # Should not use incomplete file since parent directory is missing
+        assert len(resolved) == 1
+        assert resolved[0][0] == file1  # Should keep original path, not incomplete variant
 
     def test_incomplete_file_treated_as_present(self, temp_dir: Path) -> None:
         """Test that incomplete.$file is treated as present."""

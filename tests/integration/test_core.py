@@ -200,15 +200,15 @@ def test_verify_torrent_treats_incomplete_as_present(
     assert "Hash mismatch" not in combined
 
 
-def test_verify_torrent_continue_on_error_reports_all_mismatches(
+def test_verify_torrent_continue_on_error_reports_first_mismatch_per_file(
     single_file_torrent: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """continue_on_error should keep hashing and record every mismatch."""
+    """continue_on_error should keep hashing and record first mismatch per file."""
     torrent_path, file_path = single_file_torrent
     file_path.write_bytes(b"\x00" * file_path.stat().st_size)
 
-    min_expected_mismatches = 2
+    min_expected_mismatches = 1  # Changed to 1 since we now only report first mismatch per file
     observed: list[int] = []
     original_report = cbt._report_hash_mismatch
 

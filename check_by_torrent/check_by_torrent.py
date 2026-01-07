@@ -451,6 +451,7 @@ def _verify_pieces_with_context(
     verification_failed = False
     writer = _TqdmWriter(pbar)
     renamed_files: set[Path] = set()
+    reported_hash_mismatches: set[Path] = set()  # Track files that already had hash mismatches reported
 
     for i, (piece, expected_hash) in enumerate(zip(pieces_generator(context.info, alt_path), context.piece_hashes, strict=False)):
         piece_len = len(piece)
@@ -459,6 +460,7 @@ def _verify_pieces_with_context(
 
         # Skip verification for pieces that involve missing files when continuing on error
         if piece_options.missing_files and piece_options.continue_on_hash_mismatch and any(path in piece_options.missing_files for path in piece_files):
+            # pbar.write(f"\nSkipping piece {i} due to missing files")
             bytes_processed += piece_len
             pbar.update(piece_len)
             continue
@@ -468,17 +470,26 @@ def _verify_pieces_with_context(
         pbar.update(piece_len)
 
         if actual_hash != expected_hash:
-            report = HashMismatchReport(
-                pbar=writer,
-                piece_index=i,
-                piece_files=piece_files,
-                expected_hash=expected_hash,
-                actual_hash=actual_hash,
-                mark_incomplete_prefix=piece_options.mark_incomplete_prefix,
-                renamed_files=renamed_files,
-                dry_run=piece_options.dry_run,
-            )
-            _report_hash_mismatch(report)
+            # Check if we've already reported hash mismatch for any of these files
+            files_with_mismatch = [f for f in piece_files if f not in reported_hash_mismatches]
+
+            if files_with_mismatch:
+                report = HashMismatchReport(
+                    pbar=writer,
+                    piece_index=i,
+                    piece_files=files_with_mismatch,  # Only report files not previously reported
+                    expected_hash=expected_hash,
+                    actual_hash=actual_hash,
+                    mark_incomplete_prefix=piece_options.mark_incomplete_prefix,
+                    renamed_files=renamed_files,
+                    dry_run=piece_options.dry_run,
+                )
+                _report_hash_mismatch(report)
+
+                # Mark all files in this piece as having reported hash mismatches
+                for file_path in piece_files:
+                    reported_hash_mismatches.add(file_path)
+
             verification_failed = True
             if not piece_options.continue_on_hash_mismatch:
                 return False

@@ -343,8 +343,7 @@ def verify_torrent(
                 context,
                 alt_path,
                 _PlainWriter(),
-                list_orphans=options.list_orphans,
-                delete_orphans=options.delete_orphans,
+                options=options,
             )
 
         missing_detected = False
@@ -520,11 +519,7 @@ def _verify_pieces_with_context(
         _update_progress_postfix(pbar, piece_files)
 
         # Skip verification for pieces that involve missing files when continuing on error
-        if (
-            piece_options.missing_files
-            and piece_options.continue_on_hash_mismatch
-            and any(path in piece_options.missing_files for path in piece_files)
-        ):
+        if piece_options.missing_files and piece_options.continue_on_hash_mismatch and any(path in piece_options.missing_files for path in piece_files):
             bytes_processed += expected_piece_len
             pbar.update(expected_piece_len)
             continue
@@ -683,10 +678,9 @@ def _handle_orphaned_files(
     alt_path: BytesOrStrPath | None,
     writer: _Writer,
     *,
-    list_orphans: bool,
-    delete_orphans: bool,
+    options: VerificationOptions,
 ) -> bool:
-    if not (list_orphans or delete_orphans):
+    if not (options.list_orphans or options.delete_orphans):
         return True
     if b"files" not in context.info:
         writer.write("\nError: Orphan detection is only available for multi-file torrents.")
@@ -705,14 +699,17 @@ def _handle_orphaned_files(
         writer.write("\nNo orphaned files detected.")
         return True
 
-    if list_orphans or delete_orphans:
+    if options.list_orphans or options.delete_orphans:
         writer.write("\nOrphaned files detected:")
         for path in orphans:
             writer.write(f"  - {path}")
 
-    if delete_orphans:
-        deleted = _delete_orphan_files(orphans, writer)
-        writer.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
+    if options.delete_orphans:
+        deleted = _delete_orphan_files(orphans, writer, dry_run=options.dry_run)
+        if options.dry_run:
+            writer.write(f"[DRY RUN] Would remove {deleted} orphaned file{'s' if deleted != 1 else ''}.")
+        else:
+            writer.write(f"Removed {deleted} orphaned file{'s' if deleted != 1 else ''}.")
 
     return True
 
@@ -739,13 +736,17 @@ def _identify_orphan_files(root_path: Path, files: FileList) -> list[Path]:
     return orphans
 
 
-def _delete_orphan_files(orphans: list[Path], writer: _Writer) -> int:
+def _delete_orphan_files(orphans: list[Path], writer: _Writer, dry_run: bool = False) -> int:
     deleted = 0
     for path in orphans:
         try:
-            writer.write(f"Deleting orphaned file: {path}")
-            path.unlink()
-            deleted += 1
+            if dry_run:
+                writer.write(f"[DRY RUN] Would delete orphaned file: {path}")
+                deleted += 1
+            else:
+                writer.write(f"Deleting orphaned file: {path}")
+                path.unlink()
+                deleted += 1
         except OSError as exc:
             writer.write(f"Failed to delete {path}: {exc}")
     return deleted

@@ -119,6 +119,18 @@ class TestCollectMissingFiles:
         assert len(missing) == 1
         assert file2 in missing
 
+    def test_missing_file_with_missing_parent_directory(self, temp_dir: Path) -> None:
+        """Test that files in missing parent directories are treated as missing."""
+        # Create a file path with missing parent directory
+        file1 = temp_dir / "missing_dir" / "file1.bin"
+        # Don't create the parent directory or the file
+
+        files = [(file1, 8)]
+        missing = _collect_missing_files(files)
+        # file1 should be missing since parent directory doesn't exist
+        assert len(missing) == 1
+        assert file1 in missing
+
     def test_incomplete_file_treated_as_present(self, temp_dir: Path) -> None:
         """Test that incomplete.$file is treated as present."""
         file1 = temp_dir / "file1.bin"

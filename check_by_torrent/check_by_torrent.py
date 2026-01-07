@@ -388,11 +388,12 @@ def _collect_missing_files(files: list[tuple[Path, int]]) -> list[Path]:
     missing_files = []
     for file_path, _ in files:
         if not file_path.exists():
-            # Check if incomplete.$file exists instead
-            incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
-            if incomplete_path.exists():
-                # File exists but is incomplete - report as mismatched, not missing
-                continue
+            # Check if incomplete.$file exists instead, but only if parent directory exists
+            if file_path.parent.exists():
+                incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
+                if incomplete_path.exists():
+                    # File exists but is incomplete - report as mismatched, not missing
+                    continue
             missing_files.append(file_path)
     return missing_files
 
@@ -402,11 +403,16 @@ def _resolve_file_paths(files: list[tuple[Path, int]]) -> list[tuple[Path, int]]
     resolved_files = []
     for file_path, file_size in files:
         if not file_path.exists():
-            # Try to use incomplete.$file variant
-            incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
-            if incomplete_path.exists():
-                resolved_files.append((incomplete_path, file_size))
+            # Check if parent directory exists before trying incomplete file
+            if file_path.parent.exists():
+                # Try to use incomplete.$file variant
+                incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
+                if incomplete_path.exists():
+                    resolved_files.append((incomplete_path, file_size))
+                else:
+                    resolved_files.append((file_path, file_size))
             else:
+                # Parent directory doesn't exist, keep original path (will be treated as missing)
                 resolved_files.append((file_path, file_size))
         else:
             resolved_files.append((file_path, file_size))

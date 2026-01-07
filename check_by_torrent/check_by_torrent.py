@@ -377,7 +377,7 @@ def verify_torrent(
 
             piece_options = PieceVerificationOptions(
                 continue_on_hash_mismatch=options.continue_on_error,
-                mark_incomplete_prefix=options.mark_incomplete_prefix if not options.continue_on_error else None,
+                mark_incomplete_prefix=options.mark_incomplete_prefix,
                 resolved_files=resolved_files,
                 allow_length_mismatch=bool(missing_files) if options.continue_on_error else False,
                 missing_files=set(missing_files) if missing_files else None,

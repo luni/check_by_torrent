@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from _pytest.capture import CaptureFixture
 
+from check_by_torrent.check_by_torrent import VerificationOptions
 from check_by_torrent.cli import main
 
 
@@ -48,9 +49,12 @@ def test_cli_success() -> None:
                     mock_verify.assert_called_once_with(
                         Path("test.torrent"),
                         None,
-                        list_orphans=False,
-                        delete_orphans=False,
-                        continue_on_error=False,
+                        options=VerificationOptions(
+                            list_orphans=False,
+                            delete_orphans=False,
+                            continue_on_error=False,
+                            mark_incomplete_prefix=None,
+                        ),
                     )
                     mock_exit.assert_called_once_with(0)
 
@@ -68,9 +72,12 @@ def test_cli_with_path() -> None:
                     mock_verify.assert_called_once_with(
                         Path("test.torrent"),
                         Path("/custom/path"),
-                        list_orphans=False,
-                        delete_orphans=False,
-                        continue_on_error=False,
+                        options=VerificationOptions(
+                            list_orphans=False,
+                            delete_orphans=False,
+                            continue_on_error=False,
+                            mark_incomplete_prefix=None,
+                        ),
                     )
                     mock_exit.assert_called_once_with(0)
 
@@ -121,9 +128,12 @@ def test_cli_delete_orphans_implies_list(capsys: CaptureFixture) -> None:
     mock_verify.assert_called_once_with(
         Path("test.torrent"),
         None,
-        list_orphans=True,
-        delete_orphans=True,
-        continue_on_error=False,
+        options=VerificationOptions(
+            list_orphans=True,
+            delete_orphans=True,
+            continue_on_error=False,
+            mark_incomplete_prefix=None,
+        ),
     )
 
 
@@ -143,9 +153,38 @@ def test_cli_continue_on_error_flag() -> None:
     mock_verify.assert_called_once_with(
         Path("test.torrent"),
         None,
-        list_orphans=False,
-        delete_orphans=False,
-        continue_on_error=True,
+        options=VerificationOptions(
+            list_orphans=False,
+            delete_orphans=False,
+            continue_on_error=True,
+            mark_incomplete_prefix=None,
+        ),
+    )
+
+
+def test_cli_restore_incomplete_flag() -> None:
+    """--restore-incomplete should forward flag to verifier."""
+    with patch(
+        "sys.argv",
+        ["check-by-torrent", "test.torrent", "--restore-incomplete"],
+    ):
+        with patch("check_by_torrent.cli.Path.exists", return_value=True):
+            with patch("check_by_torrent.cli.verify_torrent") as mock_verify:
+                mock_verify.return_value = True
+                with patch("sys.exit", side_effect=SystemExit(0)):
+                    with pytest.raises(SystemExit):
+                        main()
+
+    mock_verify.assert_called_once_with(
+        Path("test.torrent"),
+        None,
+        options=VerificationOptions(
+            list_orphans=False,
+            delete_orphans=False,
+            continue_on_error=False,
+            mark_incomplete_prefix=None,
+            restore_incomplete=True,
+        ),
     )
 
 

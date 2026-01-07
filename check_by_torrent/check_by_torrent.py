@@ -149,9 +149,15 @@ def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) 
         piece = bytearray()
         files = get_files(info, alt_file)
 
-        for file_path, _ in files:
+        for original_path, _ in files:
+            # Check for incomplete.$file variant if original doesn't exist
+            file_path = original_path
             if not file_path.is_file():
-                continue
+                incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
+                if incomplete_path.is_file():
+                    file_path = incomplete_path
+                else:
+                    continue
 
             try:
                 with file_path.open("rb") as f:
@@ -225,34 +231,64 @@ class _PlainWriter:
         print(message)
 
 
+class _TqdmWriter:
+    """Adapter to treat tqdm instances as _Writer."""
+
+    def __init__(self, bar: tqdm) -> None:
+        self._bar = bar
+
+    def write(self, message: str) -> None:
+        self._bar.write(message)
+
+
+@dataclass
+class VerificationOptions:
+    """Options for torrent verification."""
+
+    list_orphans: bool = False
+    delete_orphans: bool = False
+    continue_on_error: bool = False
+    mark_incomplete_prefix: str | None = None
+    restore_incomplete: bool = False
+
+
+@dataclass
+class PieceVerificationOptions:
+    """Options for piece verification."""
+
+    continue_on_hash_mismatch: bool = False
+    mark_incomplete_prefix: str | None = None
+    resolved_files: list[tuple[Path, int]] | None = None
+
+
 def verify_torrent(
     torrent_path: str | os.PathLike,
     alt_path: BytesOrStrPath | None = None,
-    *,
-    list_orphans: bool = False,
-    delete_orphans: bool = False,
-    continue_on_error: bool = False,
+    options: VerificationOptions | None = None,
 ) -> bool:
     """Verify the integrity of a torrent download.
 
     Args:
         torrent_path: Path to the .torrent file
         alt_path: Alternative path to the downloaded files
+        options: Verification options (if None, uses defaults)
 
     Returns:
         bool: True if verification succeeded, False otherwise
 
     """
+    if options is None:
+        options = VerificationOptions()
     try:
         context = _prepare_verification_context(torrent_path, alt_path)
-        orphan_mode = list_orphans or delete_orphans
+        orphan_mode = options.list_orphans or options.delete_orphans
         if orphan_mode:
             return _handle_orphaned_files(
                 context,
                 alt_path,
                 _PlainWriter(),
-                list_orphans=list_orphans,
-                delete_orphans=delete_orphans,
+                list_orphans=options.list_orphans,
+                delete_orphans=options.delete_orphans,
             )
 
         missing_detected = False
@@ -265,20 +301,35 @@ def verify_torrent(
             desc=f"Verifying {context.display_name[:30]}",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
         ) as pbar:
+            # Resolve file paths to use incomplete.$file variants when available
+            resolved_files = _resolve_file_paths(context.files)
+
+            # Check for truly missing files (no incomplete variant either)
             missing_files = _collect_missing_files(context.files)
             if missing_files:
                 _report_missing_files(pbar, missing_files)
-                if not continue_on_error:
+                if not options.continue_on_error:
                     return False
                 missing_detected = True
                 pbar.write("\nContinuing despite missing files (--continue-on-error).")
 
+            piece_options = PieceVerificationOptions(
+                continue_on_hash_mismatch=options.continue_on_error,
+                mark_incomplete_prefix=options.mark_incomplete_prefix if not options.continue_on_error else None,
+                resolved_files=resolved_files,
+            )
             hashes_ok = _verify_pieces_with_context(
                 context,
                 alt_path,
                 pbar,
-                continue_on_hash_mismatch=continue_on_error,
+                piece_options=piece_options,
             )
+
+            # Restore incomplete files if verification succeeded and restore option is enabled
+            if hashes_ok and options.restore_incomplete:
+                writer = _TqdmWriter(pbar)
+                _restore_incomplete_files(resolved_files, writer)
+
         return hashes_ok and not missing_detected
     except TorrentError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -305,11 +356,64 @@ def _prepare_verification_context(torrent_path: str | os.PathLike, alt_path: Byt
     return VerificationContext(info=info, piece_hashes=piece_hashes, total_length=total_length, display_name=name, files=files)
 
 
-def _collect_missing_files(files: FileList) -> list[str]:
-    return [str(file_path) for file_path, _ in files if not file_path.is_file()]
+def _restore_incomplete_files(resolved_files: list[tuple[Path, int]], writer: _Writer) -> None:
+    """Restore incomplete files to their original names if hashes match."""
+    restored_count = 0
+
+    for resolved_path, _ in resolved_files:
+        # Check if this is an incomplete file
+        if resolved_path.name.startswith("incomplete."):
+            # Find the corresponding original file path
+            original_name = resolved_path.name[len("incomplete.") :]
+            original_path = resolved_path.with_name(original_name)
+
+            # Check if original file is missing and incomplete file exists
+            if not original_path.exists() and resolved_path.exists():
+                try:
+                    # Rename incomplete file back to original name
+                    resolved_path.rename(original_path)
+                    writer.write(f"Restored incomplete file: {resolved_path} -> {original_path}")
+                    restored_count += 1
+                except OSError as exc:
+                    writer.write(f"Failed to restore {resolved_path}: {exc}")
+
+    if restored_count > 0:
+        writer.write(f"Successfully restored {restored_count} incomplete file(s)")
+    else:
+        writer.write("No incomplete files to restore")
 
 
-def _report_missing_files(pbar: tqdm, missing_files: list[str]) -> None:
+def _collect_missing_files(files: list[tuple[Path, int]]) -> list[Path]:
+    """Return a list of missing files, checking for incomplete.$file variants."""
+    missing_files = []
+    for file_path, _ in files:
+        if not file_path.exists():
+            # Check if incomplete.$file exists instead
+            incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
+            if incomplete_path.exists():
+                # File exists but is incomplete - report as mismatched, not missing
+                continue
+            missing_files.append(file_path)
+    return missing_files
+
+
+def _resolve_file_paths(files: list[tuple[Path, int]]) -> list[tuple[Path, int]]:
+    """Resolve file paths, using incomplete.$file variants when original files are missing."""
+    resolved_files = []
+    for file_path, file_size in files:
+        if not file_path.exists():
+            # Try to use incomplete.$file variant
+            incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
+            if incomplete_path.exists():
+                resolved_files.append((incomplete_path, file_size))
+            else:
+                resolved_files.append((file_path, file_size))
+        else:
+            resolved_files.append((file_path, file_size))
+    return resolved_files
+
+
+def _report_missing_files(pbar: tqdm, missing_files: list[Path]) -> None:
     pbar.write("\nError: The following files are missing:")
     for path in missing_files:
         pbar.write(f"  - {path}")
@@ -320,11 +424,15 @@ def _verify_pieces_with_context(
     alt_path: BytesOrStrPath | None,
     pbar: tqdm,
     *,
-    continue_on_hash_mismatch: bool = False,
+    piece_options: PieceVerificationOptions,
 ) -> bool:
-    tracker = PieceFileTracker(context.files)
+    # Use resolved files if provided, otherwise use original context files
+    files_to_track = piece_options.resolved_files if piece_options.resolved_files is not None else context.files
+    tracker = PieceFileTracker(files_to_track)
     bytes_processed = 0
     verification_failed = False
+    writer = _TqdmWriter(pbar)
+    renamed_files: set[Path] = set()
 
     for i, (piece, expected_hash) in enumerate(zip(pieces_generator(context.info, alt_path), context.piece_hashes, strict=False)):
         piece_len = len(piece)
@@ -336,9 +444,18 @@ def _verify_pieces_with_context(
         pbar.update(piece_len)
 
         if actual_hash != expected_hash:
-            _report_hash_mismatch(pbar, i, piece_files, expected_hash, actual_hash)
+            report = HashMismatchReport(
+                pbar=writer,
+                piece_index=i,
+                piece_files=piece_files,
+                expected_hash=expected_hash,
+                actual_hash=actual_hash,
+                mark_incomplete_prefix=piece_options.mark_incomplete_prefix,
+                renamed_files=renamed_files,
+            )
+            _report_hash_mismatch(report)
             verification_failed = True
-            if not continue_on_hash_mismatch:
+            if not piece_options.continue_on_hash_mismatch:
                 return False
             continue
 
@@ -363,18 +480,71 @@ def _update_progress_postfix(pbar: tqdm, piece_files: list[Path]) -> None:
     pbar.set_postfix(file=truncated)
 
 
-def _report_hash_mismatch(pbar: tqdm, piece_index: int, piece_files: list[Path], expected_hash: bytes, actual_hash: bytes) -> None:
-    pbar.write(f"\nError: Hash mismatch at piece {piece_index}")
-    if not piece_files:
-        pbar.write("No file mapping available for this piece.")
-    elif len(piece_files) == 1:
-        pbar.write(f"Potentially corrupted file: {piece_files[0]}")
+@dataclass
+class HashMismatchReport:
+    """Data for hash mismatch reporting."""
+
+    pbar: _Writer
+    piece_index: int
+    piece_files: list[Path]
+    expected_hash: bytes
+    actual_hash: bytes
+    mark_incomplete_prefix: str | None = None
+    renamed_files: set[Path] | None = None
+
+
+def _report_hash_mismatch(report: HashMismatchReport) -> None:
+    """Report a hash mismatch with optional file renaming."""
+    report.pbar.write(f"\nError: Hash mismatch at piece {report.piece_index}")
+    if not report.piece_files:
+        report.pbar.write("No file mapping available for this piece.")
+    elif len(report.piece_files) == 1:
+        corrupted = report.piece_files[0]
+        report.pbar.write(f"Potentially corrupted file: {corrupted}")
+        if report.mark_incomplete_prefix:
+            _rename_incomplete_file(corrupted, report.mark_incomplete_prefix, report.pbar, report.renamed_files)
     else:
-        pbar.write("Piece spans multiple files; potentially corrupted files:")
-        for file_path in piece_files:
-            pbar.write(f"  - {file_path}")
-    pbar.write(f"Expected hash: {expected_hash.hex()}")
-    pbar.write(f"Actual hash:   {actual_hash.hex()}")
+        report.pbar.write("Piece spans multiple files; potentially corrupted files:")
+        for file_path in report.piece_files:
+            report.pbar.write(f"  - {file_path}")
+        if report.mark_incomplete_prefix:
+            for file_path in report.piece_files:
+                _rename_incomplete_file(file_path, report.mark_incomplete_prefix, report.pbar, report.renamed_files)
+    report.pbar.write(f"Expected hash: {report.expected_hash.hex()}")
+    report.pbar.write(f"Actual hash:   {report.actual_hash.hex()}")
+
+
+def _rename_incomplete_file(
+    file_path: Path,
+    prefix: str,
+    writer: _Writer,
+    renamed_files: set[Path] | None = None,
+) -> None:
+    if renamed_files is None:
+        renamed_files = set()
+    if file_path in renamed_files:
+        return
+    renamed_files.add(file_path)
+
+    if not file_path.exists():
+        writer.write(f"Cannot rename missing file: {file_path}")
+        return
+
+    if file_path.name.startswith(prefix):
+        writer.write(f"File already marked incomplete: {file_path}")
+        return
+
+    target = file_path.with_name(f"{prefix}{file_path.name}")
+    counter = 1
+    while target.exists():
+        target = file_path.with_name(f"{prefix}{file_path.name}.{counter}")
+        counter += 1
+
+    try:
+        file_path.rename(target)
+        writer.write(f"Renamed incomplete file to: {target}")
+    except OSError as exc:
+        writer.write(f"Failed to rename {file_path}: {exc}")
 
 
 def _handle_orphaned_files(

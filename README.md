@@ -94,7 +94,25 @@ To inspect every piece mismatch instead of stopping at the first failure, use:
 check-by-torrent my_collection.torrent /data/torrents --continue-on-error
 ```
 
-This keeps hashing after each mismatch so you get a full list of corrupted pieces. (In orphan-only mode this flag is ignored because hashing is skipped entirely.)
+This keeps hashing after each mismatch and even after missing files are detected so you get a full list of issues (missing files are still reported up front and the command ultimately exits with failure if any remain). In orphan-only mode this flag is ignored because hashing is skipped entirely.
+
+### Mark incomplete files
+
+To automatically rename files that fail verification, use:
+
+```bash
+check-by-torrent my_collection.torrent /data/torrents --mark-incomplete
+```
+
+You can optionally provide a custom prefix:
+
+```bash
+check-by-torrent my_collection.torrent /data/torrents --mark-incomplete "corrupt."
+```
+
+The tool prepends the prefix to each corrupted file exactly once, avoiding name collisions. Files are renamed from `$file` to `prefix$file`. When `--continue-on-error` is active, no renaming occurs so you get a clean report of all issues. In orphan-only mode this flag is ignored.
+
+Note: Files marked as incomplete are treated as present during verification, so they won't be reported as "missing" but will still trigger hash mismatches if the content doesn't match the torrent.
 
 ## Output
 

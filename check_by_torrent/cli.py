@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Local application imports
-from .check_by_torrent import verify_torrent
+from check_by_torrent.check_by_torrent import VerificationOptions, verify_torrent
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +30,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep hashing even if a piece hash mismatch is encountered",
     )
+    parser.add_argument(
+        "--restore-incomplete",
+        action="store_true",
+        help="Automatically restore incomplete.$file to $file if hashes match",
+    )
+    parser.add_argument(
+        "--mark-incomplete",
+        nargs="?",
+        const="incomplete.",
+        help="Rename corrupted files with prefix (default: incomplete.$file)",
+    )
     return parser.parse_args()
 
 
@@ -48,14 +59,20 @@ def main() -> None:
             print("Warning: --delete-orphans implies --list-orphans", file=sys.stderr)
             args.list_orphans = True
 
-        if verify_torrent(
-            torrent_path,
-            path,
+        orphan_mode = args.list_orphans or args.delete_orphans
+        options = VerificationOptions(
             list_orphans=args.list_orphans,
             delete_orphans=args.delete_orphans,
             continue_on_error=args.continue_on_error,
-        ):
-            orphan_mode = args.list_orphans or args.delete_orphans
+            mark_incomplete_prefix=args.mark_incomplete,
+            restore_incomplete=args.restore_incomplete,
+        )
+        success = verify_torrent(
+            torrent_path,
+            path,
+            options=options,
+        )
+        if success:
             if not orphan_mode:
                 print("Verification successful")
             sys.exit(0)

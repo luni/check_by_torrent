@@ -379,7 +379,7 @@ def verify_torrent(
                 continue_on_hash_mismatch=options.continue_on_error,
                 mark_incomplete_prefix=options.mark_incomplete_prefix,
                 resolved_files=resolved_files,
-                allow_length_mismatch=bool(missing_files) if options.continue_on_error else False,
+                allow_length_mismatch=options.continue_on_error,
                 missing_files=set(missing_files) if missing_files else None,
                 dry_run=options.dry_run,
             )

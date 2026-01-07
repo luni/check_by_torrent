@@ -510,22 +510,42 @@ def _verify_pieces_with_context(
     writer = _TqdmWriter(pbar)
     renamed_files: set[Path] = set()
     reported_hash_mismatches: set[Path] = set()  # Track files that already had hash mismatches reported
+    piece_length = int(context.info[b"piece length"])
+    total_pieces = len(context.piece_hashes)
+    piece_data = pieces_generator(context.info, alt_path)
 
-    for i, (piece, expected_hash) in enumerate(zip(pieces_generator(context.info, alt_path), context.piece_hashes, strict=False)):
-        piece_len = len(piece)
-        piece_files = tracker.advance(piece_len)
+    for i, expected_hash in enumerate(context.piece_hashes):
+        expected_piece_len = _piece_length_for_index(piece_length, context.total_length, i, total_pieces)
+        piece_files = tracker.advance(expected_piece_len)
         _update_progress_postfix(pbar, piece_files)
 
         # Skip verification for pieces that involve missing files when continuing on error
-        if piece_options.missing_files and piece_options.continue_on_hash_mismatch and any(path in piece_options.missing_files for path in piece_files):
-            # pbar.write(f"\nSkipping piece {i} due to missing files")
-            bytes_processed += piece_len
-            pbar.update(piece_len)
+        if (
+            piece_options.missing_files
+            and piece_options.continue_on_hash_mismatch
+            and any(path in piece_options.missing_files for path in piece_files)
+        ):
+            bytes_processed += expected_piece_len
+            pbar.update(expected_piece_len)
             continue
 
+        try:
+            piece = next(piece_data)
+        except StopIteration:
+            pbar.write("\nError: Ran out of data while hashing pieces")
+            return False
+
+        actual_len = len(piece)
+        bytes_processed += actual_len
+        pbar.update(actual_len)
+
+        if not piece_options.allow_length_mismatch and actual_len != expected_piece_len:
+            pbar.write(
+                f"\nError: Piece {i} expected {human_readable_size(expected_piece_len)} but read {human_readable_size(actual_len)}",
+            )
+            return False
+
         actual_hash = hashlib.sha1(piece).digest()
-        bytes_processed += piece_len
-        pbar.update(piece_len)
 
         if actual_hash != expected_hash:
             # Check if we've already reported hash mismatch for any of these files
@@ -563,6 +583,15 @@ def _verify_pieces_with_context(
         return False
 
     return not verification_failed
+
+
+def _piece_length_for_index(piece_length: int, total_length: int, piece_index: int, total_pieces: int) -> int:
+    if total_pieces == 0:
+        return 0
+    if piece_index < total_pieces - 1:
+        return piece_length
+    remainder = total_length % piece_length
+    return remainder if remainder else piece_length
 
 
 def _update_progress_postfix(pbar: tqdm | SimpleProgress, piece_files: list[Path]) -> None:

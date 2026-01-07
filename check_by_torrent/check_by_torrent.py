@@ -260,6 +260,7 @@ class PieceVerificationOptions:
     mark_incomplete_prefix: str | None = None
     resolved_files: list[tuple[Path, int]] | None = None
     allow_length_mismatch: bool = False
+    missing_files: set[Path] | None = None
 
 
 def verify_torrent(
@@ -319,6 +320,7 @@ def verify_torrent(
                 mark_incomplete_prefix=options.mark_incomplete_prefix if not options.continue_on_error else None,
                 resolved_files=resolved_files,
                 allow_length_mismatch=bool(missing_files) if options.continue_on_error else False,
+                missing_files=set(missing_files) if missing_files else None,
             )
             hashes_ok = _verify_pieces_with_context(
                 context,
@@ -446,6 +448,13 @@ def _verify_pieces_with_context(
         piece_len = len(piece)
         piece_files = tracker.advance(piece_len)
         _update_progress_postfix(pbar, piece_files)
+
+        # Skip verification for pieces that involve missing files when continuing on error
+        if piece_options.missing_files and any(path in piece_options.missing_files for path in piece_files):
+            pbar.write(f"\nSkipping piece {i} due to missing files")
+            bytes_processed += piece_len
+            pbar.update(piece_len)
+            continue
 
         actual_hash = hashlib.sha1(piece).digest()
         bytes_processed += piece_len

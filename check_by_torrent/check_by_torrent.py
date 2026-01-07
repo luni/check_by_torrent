@@ -12,10 +12,60 @@ import sys
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, Union, cast, runtime_checkable
 
 import bencodepy
 from tqdm import tqdm
+
+
+@runtime_checkable
+class _ProgressBar(Protocol):
+    """Protocol for progress bar implementations."""
+
+    def update(self, n: int) -> None:
+        """Update progress by n bytes."""
+        ...
+
+    def set_postfix(self, **kwargs: object) -> None:
+        """Set postfix text."""
+        ...
+
+    def write(self, msg: str) -> None:
+        """Write a message."""
+        ...
+
+    def __enter__(self) -> "_ProgressBar":
+        """Context manager entry."""
+        ...
+
+    def __exit__(self, *args: object) -> None:
+        """Context manager exit."""
+        ...
+
+
+# Simple progress indicator for --no-progress option
+class SimpleProgress:
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.current = 0
+
+    def __enter__(self) -> "SimpleProgress":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        _ = args  # Mark as intentionally unused
+        pass
+
+    def update(self, n: int) -> None:
+        self.current += n
+
+    def set_postfix(self, **kwargs: object) -> None:
+        _ = kwargs  # Mark as intentionally unused
+        pass
+
+    def write(self, msg: str) -> None:
+        print(msg)
+
 
 # Constants
 KB = 1024
@@ -25,6 +75,7 @@ TB = GB * 1024
 PB = TB * 1024
 
 SHA1_LENGTH = 20
+MAX_DISPLAY_FILENAME_LENGTH = 20
 
 # Type aliases
 
@@ -232,13 +283,13 @@ class _PlainWriter:
 
 
 class _TqdmWriter:
-    """Adapter to treat tqdm instances as _Writer."""
+    """Writer adapter for tqdm progress bars."""
 
-    def __init__(self, bar: tqdm) -> None:
-        self._bar = bar
+    def __init__(self, pbar: tqdm | SimpleProgress) -> None:
+        self.pbar = pbar
 
     def write(self, message: str) -> None:
-        self._bar.write(message)
+        self.pbar.write(message)
 
 
 @dataclass
@@ -251,6 +302,7 @@ class VerificationOptions:
     mark_incomplete_prefix: str | None = None
     restore_incomplete: bool = False
     dry_run: bool = False
+    no_progress: bool = False
 
 
 @dataclass
@@ -297,14 +349,20 @@ def verify_torrent(
 
         missing_detected = False
 
-        with tqdm(
-            total=context.total_length,
-            unit="B",
-            unit_scale=True,
-            unit_divisor=1024,
-            desc=f"Verifying {context.display_name[:30]}",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
-        ) as pbar:
+        # Create progress bar or simple text output
+        if options.no_progress:
+            pbar = SimpleProgress(context.total_length)
+        else:
+            pbar = tqdm(
+                total=context.total_length,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"Verifying {context.display_name[:30]}",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+            )
+
+        with pbar:
             # Resolve file paths to use incomplete.$file variants when available
             resolved_files = _resolve_file_paths(context.files)
 
@@ -431,7 +489,7 @@ def _resolve_file_paths(files: list[tuple[Path, int]]) -> list[tuple[Path, int]]
     return resolved_files
 
 
-def _report_missing_files(pbar: tqdm, missing_files: list[Path]) -> None:
+def _report_missing_files(pbar: Union[tqdm, "SimpleProgress"], missing_files: list[Path]) -> None:
     pbar.write("\nError: The following files are missing:")
     for path in missing_files:
         pbar.write(f"  - {path}")
@@ -440,7 +498,7 @@ def _report_missing_files(pbar: tqdm, missing_files: list[Path]) -> None:
 def _verify_pieces_with_context(
     context: VerificationContext,
     alt_path: BytesOrStrPath | None,
-    pbar: tqdm,
+    pbar: Union[tqdm, "SimpleProgress"],
     *,
     piece_options: PieceVerificationOptions,
 ) -> bool:
@@ -507,14 +565,16 @@ def _verify_pieces_with_context(
     return not verification_failed
 
 
-def _update_progress_postfix(pbar: tqdm, piece_files: list[Path]) -> None:
+def _update_progress_postfix(pbar: tqdm | SimpleProgress, piece_files: list[Path]) -> None:
+    """Update the progress bar postfix with the current file name."""
     if not piece_files:
         pbar.set_postfix(file="")
         return
 
     display_name = piece_files[-1].name
-    truncated = (display_name[:SHA1_LENGTH] + "...") if len(display_name) > SHA1_LENGTH else display_name
-    pbar.set_postfix(file=truncated)
+    if len(display_name) > MAX_DISPLAY_FILENAME_LENGTH:
+        display_name = f"{display_name[:MAX_DISPLAY_FILENAME_LENGTH]}..."
+    pbar.set_postfix(file=display_name)
 
 
 @dataclass

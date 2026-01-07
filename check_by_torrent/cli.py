@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         help="Keep hashing even if a piece hash mismatch is encountered",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without actually renaming files",
+    )
+    parser.add_argument(
         "--restore-incomplete",
         action="store_true",
         help="Automatically restore incomplete.$file to $file if hashes match",
@@ -66,6 +71,7 @@ def main() -> None:
             continue_on_error=args.continue_on_error,
             mark_incomplete_prefix=args.mark_incomplete,
             restore_incomplete=args.restore_incomplete,
+            dry_run=args.dry_run,
         )
         success = verify_torrent(
             torrent_path,

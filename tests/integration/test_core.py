@@ -97,6 +97,49 @@ def test_verify_torrent_missing_torrent_file(tmp_path: Path) -> None:
     assert verify_torrent(str(tmp_path / "missing.torrent")) is False
 
 
+def test_verify_torrent_ignores_bep47_padding_files(tmp_path: Path) -> None:
+    """BEP47 padding file entries should be treated as implicit zero bytes."""
+
+    piece_length = 8
+    download_dir = tmp_path / "padding_payload"
+    download_dir.mkdir()
+
+    payload_dir = download_dir / "tea"
+    payload_dir.mkdir()
+
+    file0 = payload_dir / "file0.bin"
+    file1 = payload_dir / "file1.bin"
+    file0.write_bytes(b"A" * 6)
+    file1.write_bytes(b"B" * 6)
+
+    padding_name = "_____padding_file_0"
+    padding_path = payload_dir / padding_name
+
+    files_meta: list[dict[bytes, object]] = [
+        {b"path": [b"tea", b"file0.bin"], b"length": 6},
+        {b"path": [b"tea", padding_name.encode()], b"length": 4, b"attr": b"p"},
+        {b"path": [b"tea", b"file1.bin"], b"length": 6},
+    ]
+
+    combined = file0.read_bytes() + (b"\x00" * 4) + file1.read_bytes()
+    pieces = bytearray()
+    for offset in range(0, len(combined), piece_length):
+        pieces.extend(hashlib.sha1(combined[offset : offset + piece_length]).digest())
+
+    info = {
+        b"name": b"padding",
+        b"piece length": piece_length,
+        b"files": files_meta,
+        b"pieces": bytes(pieces),
+    }
+
+    torrent_path = tmp_path / "padding.torrent"
+    torrent_path.write_bytes(bencodepy.encode({b"info": info}))
+
+    assert not padding_path.exists()
+    assert verify_torrent(str(torrent_path), download_dir) is True
+
+
 def test_verify_torrent_lists_orphans(multi_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
     """Listing orphans should report unexpected files and still verify successfully."""
     torrent_path, download_dir = multi_file_torrent

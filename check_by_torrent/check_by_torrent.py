@@ -94,6 +94,7 @@ class VerificationContext:
     total_length: int
     display_name: str
     files: FileList
+    padding_files: set[Path]
 
 
 class PieceFileTracker:
@@ -146,6 +147,52 @@ def _coerce_path(path_value: BytesOrStrPath) -> Path:
     return Path(path_value)
 
 
+def _is_padding_file(file_info: Mapping[bytes, Any]) -> bool:
+    """Return True if a multi-file entry is a BEP47 padding file."""
+
+    attrs = file_info.get(b"attr")
+    if isinstance(attrs, bytes) and b"p" in attrs:
+        return True
+    if isinstance(attrs, str) and "p" in attrs:
+        return True
+
+    try:
+        path_parts = file_info.get(b"path")
+        if isinstance(path_parts, list) and path_parts:
+            last = path_parts[-1]
+            if isinstance(last, bytes):
+                last_str = last.decode("utf-8", errors="replace")
+            else:
+                last_str = str(last)
+            if last_str.startswith("_____padding_file_"):
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
+def _get_padding_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> set[Path]:
+    """Return the resolved Paths for padding entries in a multi-file torrent."""
+
+    padding: set[Path] = set()
+    if b"files" not in info:
+        return padding
+
+    try:
+        name = info[b"name"].decode("utf-8")
+        base_path = _coerce_path(alt_file) if alt_file else Path(name)
+        for file_info in info[b"files"]:
+            if not _is_padding_file(file_info):
+                continue
+            segments = [Path(p.decode("utf-8")) for p in file_info[b"path"]]
+            padding.add(base_path.joinpath(*segments))
+    except (KeyError, UnicodeDecodeError):
+        return set()
+
+    return padding
+
+
 def get_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> FileList:
     """Get list of files with their sizes from torrent info.
 
@@ -181,12 +228,13 @@ def get_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> File
         raise TorrentError("Invalid torrent info") from e
 
 
-def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> Generator[bytes, None, None]:
+def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, resolved_files: FileList | None = None) -> Generator[bytes, None, None]:
     """Generate pieces from downloaded file(s) based on torrent info.
 
     Args:
         info: The 'info' dictionary from the torrent file
         alt_file: Alternative file or directory path to use instead of the one in the torrent
+        resolved_files: Pre-resolved file list (if None, will use get_files to resolve)
 
     Yields:
         bytes: The next piece of data from the file(s)
@@ -198,17 +246,23 @@ def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) 
     try:
         piece_length = int(info[b"piece length"])
         piece = bytearray()
-        files = get_files(info, alt_file)
+        files = resolved_files if resolved_files is not None else get_files(info, alt_file)
+        padding_files = _get_padding_files(info, alt_file)
 
-        for original_path, _ in files:
-            # Check for incomplete.$file variant if original doesn't exist
-            file_path = original_path
-            if not file_path.is_file():
-                incomplete_path = file_path.with_name(f"incomplete.{file_path.name}")
-                if incomplete_path.is_file():
-                    file_path = incomplete_path
-                else:
-                    continue
+        for file_path, _ in files:
+
+            if file_path in padding_files:
+                remaining_in_file = next((size for path, size in files if path == file_path), 0)
+                while remaining_in_file > 0:
+                    remaining = piece_length - len(piece)
+                    chunk_len = min(remaining, remaining_in_file)
+                    piece.extend(b"\x00" * chunk_len)
+                    remaining_in_file -= chunk_len
+
+                    if len(piece) == piece_length:
+                        yield bytes(piece)
+                        piece = bytearray()
+                continue
 
             try:
                 with file_path.open("rb") as f:
@@ -363,10 +417,10 @@ def verify_torrent(
 
         with pbar:
             # Resolve file paths to use incomplete.$file variants when available
-            resolved_files = _resolve_file_paths(context.files)
+            resolved_files = _resolve_file_paths(context.files, padding_files=context.padding_files)
 
             # Check for truly missing files (no incomplete variant either)
-            missing_files = _collect_missing_files(context.files)
+            missing_files = _collect_missing_files(context.files, padding_files=context.padding_files)
             if missing_files:
                 _report_missing_files(pbar, missing_files)
                 if not options.continue_on_error:
@@ -417,7 +471,8 @@ def _prepare_verification_context(torrent_path: str | os.PathLike, alt_path: Byt
     total_length = calculate_total_length(info)
     name = info[b"name"].decode("utf-8", errors="replace")
     files = get_files(info, alt_path)
-    return VerificationContext(info=info, piece_hashes=piece_hashes, total_length=total_length, display_name=name, files=files)
+    padding_files = _get_padding_files(info, alt_path)
+    return VerificationContext(info=info, piece_hashes=piece_hashes, total_length=total_length, display_name=name, files=files, padding_files=padding_files)
 
 
 def _restore_incomplete_files(resolved_files: list[tuple[Path, int]], writer: _Writer, dry_run: bool = False) -> None:
@@ -452,10 +507,13 @@ def _restore_incomplete_files(resolved_files: list[tuple[Path, int]], writer: _W
         writer.write("No incomplete files to restore")
 
 
-def _collect_missing_files(files: list[tuple[Path, int]]) -> list[Path]:
+def _collect_missing_files(files: list[tuple[Path, int]], *, padding_files: set[Path] | None = None) -> list[Path]:
     """Return a list of missing files, checking for incomplete.$file variants."""
     missing_files = []
+    padding = padding_files or set()
     for file_path, _ in files:
+        if file_path in padding:
+            continue
         if not file_path.exists():
             # Check if incomplete.$file exists instead, but only if parent directory exists
             if file_path.parent.exists():
@@ -467,10 +525,14 @@ def _collect_missing_files(files: list[tuple[Path, int]]) -> list[Path]:
     return missing_files
 
 
-def _resolve_file_paths(files: list[tuple[Path, int]]) -> list[tuple[Path, int]]:
+def _resolve_file_paths(files: list[tuple[Path, int]], *, padding_files: set[Path] | None = None) -> list[tuple[Path, int]]:
     """Resolve file paths, using incomplete.$file variants when original files are missing."""
     resolved_files = []
+    padding = padding_files or set()
     for file_path, file_size in files:
+        if file_path in padding:
+            resolved_files.append((file_path, file_size))
+            continue
         if not file_path.exists():
             # Check if parent directory exists before trying incomplete file
             if file_path.parent.exists():
@@ -511,7 +573,7 @@ def _verify_pieces_with_context(
     reported_hash_mismatches: set[Path] = set()  # Track files that already had hash mismatches reported
     piece_length = int(context.info[b"piece length"])
     total_pieces = len(context.piece_hashes)
-    piece_data = pieces_generator(context.info, alt_path)
+    piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track)
 
     for i, expected_hash in enumerate(context.piece_hashes):
         expected_piece_len = _piece_length_for_index(piece_length, context.total_length, i, total_pieces)

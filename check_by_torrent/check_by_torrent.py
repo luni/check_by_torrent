@@ -9,7 +9,7 @@ multi-file torrents, with progress reporting and detailed error messages.
 import hashlib
 import os
 import sys
-from collections.abc import Generator, Mapping
+from collections.abc import Collection, Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias, Union, cast, runtime_checkable
@@ -91,10 +91,11 @@ class VerificationContext:
 
     info: TorrentInfo
     piece_hashes: list[bytes]
-    total_length: int
+    total_length: int  # includes padding bytes
+    display_length: int  # excludes padding bytes
     display_name: str
     files: FileList
-    padding_files: set[Path]
+    padding_files: dict[Path, int]
 
 
 class PieceFileTracker:
@@ -105,32 +106,37 @@ class PieceFileTracker:
         self._index = 0
         self._offset = 0
 
-    def advance(self, piece_size: int) -> list[Path]:
+    def advance(self, piece_size: int) -> list[tuple[Path, int]]:
         if piece_size == 0 or not self._files:
             return []
 
-        affected: list[Path] = []
+        contributions: list[tuple[Path, int]] = []
         remaining = piece_size
         index = self._index
         offset = self._offset
 
         while remaining > 0 and index < len(self._files):
             file_path, file_size = self._files[index]
-            if not affected or affected[-1] != file_path:
-                affected.append(file_path)
-
             available = file_size - offset
-            if remaining < available:
-                offset += remaining
-                remaining = 0
-            else:
-                remaining -= available
+            take = min(remaining, available)
+
+            if take > 0:
+                if contributions and contributions[-1][0] == file_path:
+                    prev_path, prev_size = contributions[-1]
+                    contributions[-1] = (prev_path, prev_size + take)
+                else:
+                    contributions.append((file_path, take))
+
+            remaining -= take
+            if take == available:
                 index += 1
                 offset = 0
+            else:
+                offset += take
 
         self._index = index
         self._offset = offset
-        return affected
+        return contributions
 
 
 class TorrentError(Exception):
@@ -172,10 +178,10 @@ def _is_padding_file(file_info: Mapping[bytes, Any]) -> bool:
     return False
 
 
-def _get_padding_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> set[Path]:
-    """Return the resolved Paths for padding entries in a multi-file torrent."""
+def _get_padding_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> dict[Path, int]:
+    """Return the resolved Paths and lengths for padding entries in a multi-file torrent."""
 
-    padding: set[Path] = set()
+    padding: dict[Path, int] = {}
     if b"files" not in info:
         return padding
 
@@ -186,11 +192,28 @@ def _get_padding_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None
             if not _is_padding_file(file_info):
                 continue
             segments = [Path(p.decode("utf-8")) for p in file_info[b"path"]]
-            padding.add(base_path.joinpath(*segments))
+            padding_path = base_path.joinpath(*segments)
+            padding[padding_path] = int(file_info[b"length"])
     except (KeyError, UnicodeDecodeError):
-        return set()
+        return {}
 
     return padding
+
+
+def _padding_path_set(padding_files: Mapping[Path, int] | Collection[Path] | None) -> set[Path]:
+    """Return a set of padding file paths from various collection types."""
+
+    if padding_files is None:
+        return set()
+    if isinstance(padding_files, Mapping):
+        return set(padding_files.keys())
+    return set(padding_files)
+
+
+def _physical_length(contributions: list[tuple[Path, int]], padding_paths: set[Path]) -> int:
+    """Return the number of bytes in contributions that belong to real files."""
+
+    return sum(length for path, length in contributions if path not in padding_paths)
 
 
 def get_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> FileList:
@@ -249,10 +272,10 @@ def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, 
         files = resolved_files if resolved_files is not None else get_files(info, alt_file)
         padding_files = _get_padding_files(info, alt_file)
 
-        for file_path, _ in files:
+        for file_path, file_size in files:
 
             if file_path in padding_files:
-                remaining_in_file = next((size for path, size in files if path == file_path), 0)
+                remaining_in_file = padding_files.get(file_path, file_size)
                 while remaining_in_file > 0:
                     remaining = piece_length - len(piece)
                     chunk_len = min(remaining, remaining_in_file)
@@ -402,12 +425,14 @@ def verify_torrent(
 
         missing_detected = False
 
+        display_total = context.display_length or context.total_length
+
         # Create progress bar or simple text output
         if options.no_progress:
-            pbar = SimpleProgress(context.total_length)
+            pbar = SimpleProgress(display_total)
         else:
             pbar = tqdm(
-                total=context.total_length,
+                total=display_total,
                 unit="B",
                 unit_scale=True,
                 unit_divisor=1024,
@@ -472,7 +497,16 @@ def _prepare_verification_context(torrent_path: str | os.PathLike, alt_path: Byt
     name = info[b"name"].decode("utf-8", errors="replace")
     files = get_files(info, alt_path)
     padding_files = _get_padding_files(info, alt_path)
-    return VerificationContext(info=info, piece_hashes=piece_hashes, total_length=total_length, display_name=name, files=files, padding_files=padding_files)
+    display_length = max(total_length - sum(padding_files.values()), 0)
+    return VerificationContext(
+        info=info,
+        piece_hashes=piece_hashes,
+        total_length=total_length,
+        display_length=display_length,
+        display_name=name,
+        files=files,
+        padding_files=padding_files,
+    )
 
 
 def _restore_incomplete_files(resolved_files: list[tuple[Path, int]], writer: _Writer, dry_run: bool = False) -> None:
@@ -507,10 +541,14 @@ def _restore_incomplete_files(resolved_files: list[tuple[Path, int]], writer: _W
         writer.write("No incomplete files to restore")
 
 
-def _collect_missing_files(files: list[tuple[Path, int]], *, padding_files: set[Path] | None = None) -> list[Path]:
+def _collect_missing_files(
+    files: list[tuple[Path, int]],
+    *,
+    padding_files: Mapping[Path, int] | Collection[Path] | None = None,
+) -> list[Path]:
     """Return a list of missing files, checking for incomplete.$file variants."""
     missing_files = []
-    padding = padding_files or set()
+    padding = _padding_path_set(padding_files)
     for file_path, _ in files:
         if file_path in padding:
             continue
@@ -525,10 +563,14 @@ def _collect_missing_files(files: list[tuple[Path, int]], *, padding_files: set[
     return missing_files
 
 
-def _resolve_file_paths(files: list[tuple[Path, int]], *, padding_files: set[Path] | None = None) -> list[tuple[Path, int]]:
+def _resolve_file_paths(
+    files: list[tuple[Path, int]],
+    *,
+    padding_files: Mapping[Path, int] | Collection[Path] | None = None,
+) -> list[tuple[Path, int]]:
     """Resolve file paths, using incomplete.$file variants when original files are missing."""
     resolved_files = []
-    padding = padding_files or set()
+    padding = _padding_path_set(padding_files)
     for file_path, file_size in files:
         if file_path in padding:
             resolved_files.append((file_path, file_size))
@@ -566,6 +608,7 @@ def _verify_pieces_with_context(
     # Use resolved files if provided, otherwise use original context files
     files_to_track = piece_options.resolved_files if piece_options.resolved_files is not None else context.files
     tracker = PieceFileTracker(files_to_track)
+    padding_paths = _padding_path_set(context.padding_files)
     bytes_processed = 0
     verification_failed = False
     writer = _TqdmWriter(pbar)
@@ -577,13 +620,19 @@ def _verify_pieces_with_context(
 
     for i, expected_hash in enumerate(context.piece_hashes):
         expected_piece_len = _piece_length_for_index(piece_length, context.total_length, i, total_pieces)
-        piece_files = tracker.advance(expected_piece_len)
-        _update_progress_postfix(pbar, piece_files)
+        piece_contributions = tracker.advance(expected_piece_len)
+        piece_paths = [path for path, _ in piece_contributions]
+        physical_piece_len = _physical_length(piece_contributions, padding_paths)
+        _update_progress_postfix(pbar, piece_paths)
 
         # Skip verification for pieces that involve missing files when continuing on error
-        if piece_options.missing_files and piece_options.continue_on_hash_mismatch and any(path in piece_options.missing_files for path in piece_files):
+        if (
+            piece_options.missing_files
+            and piece_options.continue_on_hash_mismatch
+            and any(path in piece_options.missing_files for path in piece_paths)
+        ):
             bytes_processed += expected_piece_len
-            pbar.update(expected_piece_len)
+            pbar.update(physical_piece_len)
             continue
 
         try:
@@ -594,7 +643,7 @@ def _verify_pieces_with_context(
 
         actual_len = len(piece)
         bytes_processed += actual_len
-        pbar.update(actual_len)
+        pbar.update(physical_piece_len)
 
         if not piece_options.allow_length_mismatch and actual_len != expected_piece_len:
             pbar.write(
@@ -606,7 +655,7 @@ def _verify_pieces_with_context(
 
         if actual_hash != expected_hash:
             # Check if we've already reported hash mismatch for any of these files
-            files_with_mismatch = [f for f in piece_files if f not in reported_hash_mismatches]
+            files_with_mismatch = [f for f in piece_paths if f not in reported_hash_mismatches]
 
             if files_with_mismatch:
                 report = HashMismatchReport(
@@ -622,7 +671,7 @@ def _verify_pieces_with_context(
                 _report_hash_mismatch(report)
 
                 # Mark all files in this piece as having reported hash mismatches
-                for file_path in piece_files:
+                for file_path in piece_paths:
                     reported_hash_mismatches.add(file_path)
 
             verification_failed = True

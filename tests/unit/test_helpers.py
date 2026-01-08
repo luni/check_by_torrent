@@ -14,6 +14,8 @@ from check_by_torrent.check_by_torrent import (
     _delete_orphan_files,
     _identify_orphan_files,
     _normalize_path,
+    _padding_path_set,
+    _physical_length,
     _rename_incomplete_file,
     _report_hash_mismatch,
     _resolve_file_paths,
@@ -29,6 +31,8 @@ FILES_BEYOND_TOTAL = 2
 HASH_MISMATCH_ARGS = 5
 EXPECTED_ORPHANS = 2
 DELETED_FILES = 2
+PADDING_LENGTH = 4
+REAL_LENGTH = 6
 
 
 class TestPieceFileTracker:
@@ -54,13 +58,13 @@ class TestPieceFileTracker:
 
         # First piece within first file
         result = tracker.advance(50)
-        assert result == [Path("file1.bin")]
+        assert result == [(Path("file1.bin"), 50)]
         assert tracker._index == 0
         assert tracker._offset == PIECE_SIZE_50
 
         # Second piece still within first file
         result = tracker.advance(30)
-        assert result == [Path("file1.bin")]
+        assert result == [(Path("file1.bin"), 30)]
         assert tracker._index == 0
         assert tracker._offset == PIECE_SIZE_80
 
@@ -71,8 +75,7 @@ class TestPieceFileTracker:
 
         # Advance to end of first file and into second
         result = tracker.advance(120)
-        assert Path("file1.bin") in result
-        assert Path("file2.bin") in result
+        assert result == [(Path("file1.bin"), 100), (Path("file2.bin"), 20)]
         assert tracker._index == 1
         assert tracker._offset == PIECE_SIZE_20
 
@@ -83,8 +86,10 @@ class TestPieceFileTracker:
 
         # Advance beyond total size
         result = tracker.advance(400)
-        assert Path("file1.bin") in result
-        assert Path("file2.bin") in result
+        assert result == [
+            (Path("file1.bin"), 100),
+            (Path("file2.bin"), 200),
+        ]
         assert tracker._index == FILES_BEYOND_TOTAL  # Should be beyond all files
         assert tracker._offset == 0  # Should reset to 0 when past end
 
@@ -102,6 +107,31 @@ class TestCollectMissingFiles:
         files = [(file1, 8), (file2, 8)]
         missing = _collect_missing_files(files)
         assert missing == []
+
+
+class TestPaddingHelpers:
+    """Tests for padding helper utilities."""
+
+    def test_padding_path_set_handles_mapping(self) -> None:
+        """Mappings should return their keys as padding paths."""
+        padding_map = {Path("a"): 1, Path("b"): 2}
+        result = _padding_path_set(padding_map)
+        assert result == set(padding_map.keys())
+
+    def test_padding_path_set_handles_collections(self) -> None:
+        """Collections should pass through as a set."""
+        paths = [Path("x"), Path("y")]
+        result = _padding_path_set(paths)
+        assert result == set(paths)
+
+    def test_physical_length_ignores_padding(self) -> None:
+        """Only non-padding contributions should count toward physical length."""
+        padding_paths = {Path("pad.bin")}
+        contributions = [
+            (Path("pad.bin"), PADDING_LENGTH),
+            (Path("real.bin"), REAL_LENGTH),
+        ]
+        assert _physical_length(contributions, padding_paths) == REAL_LENGTH
 
     def test_missing_files(self, temp_dir: Path) -> None:
         """Test when some files are missing."""

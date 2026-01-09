@@ -9,6 +9,7 @@ import pytest
 from check_by_torrent.check_by_torrent import (
     TorrentError,
     _prepare_verification_context,
+    _is_piece_at_file_end,
     calculate_total_length,
     get_files,
     human_readable_size,
@@ -121,6 +122,25 @@ def test_pieces_generator_with_missing_files(temp_dir: Path) -> None:
     expected_pieces = [b"\x00" * 8, b"\x00" * 3]
     assert len(pieces) == 2
     assert pieces == expected_pieces
+
+
+def test_is_piece_at_file_end(temp_dir: Path) -> None:
+    """Test _is_piece_at_file_end function."""
+    test_file = temp_dir / "test.txt"
+    test_file.write_bytes(b"Hello")  # 5 bytes
+
+    # Piece at end of file
+    assert _is_piece_at_file_end(test_file, 3, 2, 5) is True  # offset 3, size 2, file size 5
+    assert _is_piece_at_file_end(test_file, 4, 1, 5) is True  # offset 4, size 1, file size 5
+    assert _is_piece_at_file_end(test_file, 5, 0, 5) is True  # offset 5, size 0, file size 5
+
+    # Piece not at end of file
+    assert _is_piece_at_file_end(test_file, 0, 2, 5) is False  # offset 0, size 2, file size 5
+    assert _is_piece_at_file_end(test_file, 1, 3, 5) is False  # offset 1, size 3, file size 5
+
+    # Missing file
+    missing_file = temp_dir / "missing.txt"
+    assert _is_piece_at_file_end(missing_file, 0, 5, 5) is False
 
 
 def test_prepare_context_display_length_excludes_padding(tmp_path: Path) -> None:

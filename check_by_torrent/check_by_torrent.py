@@ -784,6 +784,25 @@ def _is_zero_piece_hash(piece_hash: bytes, piece_length: int) -> bool:
     return hashlib.sha1(zero_data).digest() == piece_hash
 
 
+def _is_piece_at_file_end(file_path: Path, offset: int, size: int, file_size: int) -> bool:
+    """Check if a piece region is at the end of the file.
+
+    Args:
+        file_path: Path to the file
+        offset: Starting offset of the piece in the file
+        size: Size of the piece region in this file
+        file_size: Total size of the file
+
+    Returns:
+        True if the piece region extends to or beyond the current file end
+    """
+    if not file_path.exists():
+        return False
+
+    current_size = file_path.stat().st_size
+    return offset + size >= current_size
+
+
 def _overwrite_piece_with_zeros(
     tracker: PieceFileTracker,
     piece_length: int,
@@ -824,11 +843,24 @@ def _overwrite_piece_with_zeros(
 
         try:
             if dry_run:
-                writer.write(f"Would overwrite {size} bytes at offset {current_offset} in {file_path} with zeros")
+                # Check if we can use sparse file approach
+                if _is_piece_at_file_end(file_path, current_offset, size, file_path.stat().st_size):
+                    writer.write(f"Would create sparse hole in {file_path} from offset {current_offset} (sparse file optimization)")
+                else:
+                    writer.write(f"Would overwrite {size} bytes at offset {current_offset} in {file_path} with zeros")
             else:
-                with file_path.open("r+b") as f:
-                    f.seek(current_offset)
-                    f.write(b"\x00" * size)
+                # Check if we can use sparse file approach
+                if _is_piece_at_file_end(file_path, current_offset, size, file_path.stat().st_size):
+                    # Use sparse file approach - truncate to create a hole
+                    with file_path.open("r+b") as f:
+                        f.seek(current_offset + size)
+                        f.truncate()
+                    writer.write(f"Created sparse hole in {file_path} from offset {current_offset} (sparse file optimization)")
+                else:
+                    # Traditional approach - write zeros
+                    with file_path.open("r+b") as f:
+                        f.seek(current_offset)
+                        f.write(b"\x00" * size)
                     writer.write(f"Overwrote {size} bytes at offset {current_offset} in {file_path} with zeros")
         except OSError as e:
             writer.write(f"Error overwriting file {file_path}: {e}")

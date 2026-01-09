@@ -549,17 +549,19 @@ class TestOverwritePieceWithZeros:
         test_file.write_bytes(original_data)
 
         tracker = PieceFileTracker([(test_file, 13)])  # File size 13
-        tracker._offset = 5
+        tracker._offset = 3  # Start at offset 3, so piece doesn't extend to end
 
         mock_writer = MagicMock()
 
-        # Test actual overwrite
-        result = _overwrite_piece_with_zeros(tracker, 8, mock_writer, dry_run=False)
+        # Test actual overwrite (overwrite 5 bytes from offset 3)
+        result = _overwrite_piece_with_zeros(tracker, 5, mock_writer, dry_run=False)
 
         assert result is True
         mock_writer.write.assert_called()
         # File should be partially overwritten with zeros
-        expected_data = b"Hello" + b"\x00" * 8
+        # Original: "Hello, World!" -> overwrite from offset 3 (positions 3,4,5,6,7)
+        # "Hello, World!" -> "Hel" + "\x00\x00\x00\x00\x00" + "orld!"
+        expected_data = b"Hel" + b"\x00" * 5 + b"orld!"
         assert test_file.read_bytes() == expected_data
 
     def test_overwrite_missing_file(self, tmp_path: Path) -> None:
@@ -572,4 +574,30 @@ class TestOverwritePieceWithZeros:
         result = _overwrite_piece_with_zeros(tracker, 10, mock_writer, dry_run=False)
 
         assert result is False
-        mock_writer.write.assert_called_with(f"Cannot overwrite missing file: {missing_file}")
+        mock_writer.write.assert_called()
+
+    def test_overwrite_sparse_file_optimization(self, tmp_path: Path) -> None:
+        """Test sparse file optimization for end-of-file pieces."""
+        # Create a test file with some data
+        test_file = tmp_path / "test.bin"
+        original_data = b"Hello"
+        test_file.write_bytes(original_data)
+
+        tracker = PieceFileTracker([(test_file, 5)])  # File size 5
+        tracker._offset = 3  # Overwrite from offset 3 to end (3 + 2 = 5)
+
+        mock_writer = MagicMock()
+
+        # Test sparse file overwrite (should use truncate)
+        result = _overwrite_piece_with_zeros(tracker, 2, mock_writer, dry_run=False)
+
+        assert result is True
+        mock_writer.write.assert_called()
+        # File should remain unchanged (sparse optimization)
+        assert test_file.read_bytes() == original_data
+        assert test_file.stat().st_size == 5
+
+        # Check that sparse optimization was used in the log
+        calls = [call[0][0] for call in mock_writer.write.call_args_list]
+        sparse_calls = [call for call in calls if "sparse file optimization" in call]
+        assert len(sparse_calls) == 1

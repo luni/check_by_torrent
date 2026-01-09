@@ -13,7 +13,9 @@ from check_by_torrent.check_by_torrent import (
     _collect_missing_files,
     _delete_orphan_files,
     _identify_orphan_files,
+    _is_zero_piece_hash,
     _normalize_path,
+    _overwrite_piece_with_zeros,
     _padding_path_set,
     _physical_length,
     _rename_incomplete_file,
@@ -491,3 +493,83 @@ class TestOrphanFileHandling:
         with patch("pathlib.Path.resolve", side_effect=OSError("resolve failed")):
             normalized = _normalize_path(test_path)
             assert normalized == test_path.absolute()
+
+
+class TestZeroPieceHash:
+    """Test the _is_zero_piece_hash function."""
+
+    def test_zero_piece_hash_detection(self) -> None:
+        """Test detection of zero piece hashes."""
+        piece_length = 1024
+        zero_data = b"\x00" * piece_length
+        expected_hash = hashlib.sha1(zero_data).digest()
+
+        assert _is_zero_piece_hash(expected_hash, piece_length) is True
+
+        # Test with non-zero data
+        non_zero_data = b"\x01" + b"\x00" * (piece_length - 1)
+        non_zero_hash = hashlib.sha1(non_zero_data).digest()
+        assert _is_zero_piece_hash(non_zero_hash, piece_length) is False
+
+    def test_different_piece_lengths(self) -> None:
+        """Test zero piece hash detection with different lengths."""
+        for length in [1, 10, 100, 1024, 2048]:
+            zero_data = b"\x00" * length
+            expected_hash = hashlib.sha1(zero_data).digest()
+            assert _is_zero_piece_hash(expected_hash, length) is True
+
+
+class TestOverwritePieceWithZeros:
+    """Test the _overwrite_piece_with_zeros function."""
+
+    def test_overwrite_dry_run(self, tmp_path: Path) -> None:
+        """Test dry run mode for overwriting pieces."""
+        # Create a test file with some data
+        test_file = tmp_path / "test.bin"
+        test_file.write_bytes(b"Hello, World!")
+
+        tracker = PieceFileTracker([(test_file, 13)])  # File size 13
+        tracker._offset = 5
+
+        mock_writer = MagicMock()
+
+        # Test dry run
+        result = _overwrite_piece_with_zeros(tracker, 8, mock_writer, dry_run=True)
+
+        assert result is True
+        mock_writer.write.assert_called()
+        # File should not be modified in dry run
+        assert test_file.read_bytes() == b"Hello, World!"
+
+    def test_overwrite_actual(self, tmp_path: Path) -> None:
+        """Test actual overwriting of pieces."""
+        # Create a test file with some data
+        test_file = tmp_path / "test.bin"
+        original_data = b"Hello, World!"
+        test_file.write_bytes(original_data)
+
+        tracker = PieceFileTracker([(test_file, 13)])  # File size 13
+        tracker._offset = 5
+
+        mock_writer = MagicMock()
+
+        # Test actual overwrite
+        result = _overwrite_piece_with_zeros(tracker, 8, mock_writer, dry_run=False)
+
+        assert result is True
+        mock_writer.write.assert_called()
+        # File should be partially overwritten with zeros
+        expected_data = b"Hello" + b"\x00" * 8
+        assert test_file.read_bytes() == expected_data
+
+    def test_overwrite_missing_file(self, tmp_path: Path) -> None:
+        """Test overwriting when file doesn't exist."""
+        missing_file = tmp_path / "missing.bin"
+
+        tracker = PieceFileTracker([(missing_file, 10)])
+        mock_writer = MagicMock()
+
+        result = _overwrite_piece_with_zeros(tracker, 10, mock_writer, dry_run=False)
+
+        assert result is False
+        mock_writer.write.assert_called_with(f"Cannot overwrite missing file: {missing_file}")

@@ -380,6 +380,7 @@ class VerificationOptions:
     restore_incomplete: bool = False
     dry_run: bool = False
     no_progress: bool = False
+    overwrite_empty_pieces: bool = False
 
 
 @dataclass
@@ -392,6 +393,7 @@ class PieceVerificationOptions:
     allow_length_mismatch: bool = False
     missing_files: set[Path] | None = None
     dry_run: bool = False
+    overwrite_empty_pieces: bool = False
 
 
 def verify_torrent(
@@ -460,6 +462,7 @@ def verify_torrent(
                 allow_length_mismatch=options.continue_on_error,
                 missing_files=set(missing_files) if missing_files else None,
                 dry_run=options.dry_run,
+                overwrite_empty_pieces=options.overwrite_empty_pieces,
             )
             hashes_ok = _verify_pieces_with_context(
                 context,
@@ -654,6 +657,38 @@ def _verify_pieces_with_context(
         actual_hash = hashlib.sha1(piece).digest()
 
         if actual_hash != expected_hash:
+            # Check if this piece should be all zeros and overwrite option is enabled
+            if piece_options.overwrite_empty_pieces and _is_zero_piece_hash(expected_hash, expected_piece_len):
+                # Create a copy of the tracker for this piece to overwrite
+                temp_tracker = PieceFileTracker(files_to_track)
+                temp_tracker._index = tracker._index
+                temp_tracker._offset = tracker._offset
+
+                writer.write(f"\nOverwriting piece {i} with zeros (should be empty but contains data)")
+                overwrite_success = _overwrite_piece_with_zeros(
+                    temp_tracker, expected_piece_len, writer, piece_options.dry_run
+                )
+
+                if overwrite_success and not piece_options.dry_run:
+                    # Re-read the piece after overwriting
+                    try:
+                        piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track)
+                        # Skip to the current piece
+                        for _ in range(i):
+                            next(piece_data)
+                        piece = next(piece_data)
+                        actual_hash = hashlib.sha1(piece).digest()
+
+                        if actual_hash == expected_hash:
+                            writer.write(f"Piece {i} successfully overwritten and verified")
+                            bytes_processed += len(piece)
+                            pbar.update(physical_piece_len)
+                            continue
+                        else:
+                            writer.write(f"Piece {i} overwrite failed - hash still doesn't match")
+                    except (StopIteration, OSError) as e:
+                        writer.write(f"Error re-reading piece {i} after overwrite: {e}")
+
             # Check if we've already reported hash mismatch for any of these files
             files_with_mismatch = [f for f in piece_paths if f not in reported_hash_mismatches]
 
@@ -724,6 +759,73 @@ class HashMismatchReport:
     mark_incomplete_prefix: str | None = None
     renamed_files: set[Path] | None = None
     dry_run: bool = False
+
+
+def _is_zero_piece_hash(piece_hash: bytes, piece_length: int) -> bool:
+    """Check if a piece hash corresponds to all-zero content of the given length."""
+    zero_data = b"\x00" * piece_length
+    return hashlib.sha1(zero_data).digest() == piece_hash
+
+
+def _overwrite_piece_with_zeros(
+    tracker: PieceFileTracker,
+    piece_length: int,
+    writer: _Writer,
+    dry_run: bool = False,
+) -> bool:
+    """Overwrite the current piece region in files with zeros.
+
+    Args:
+        tracker: PieceFileTracker positioned at the start of the piece
+        piece_length: Total length of the piece
+        writer: Writer for output messages
+        dry_run: If True, only report what would be done
+
+    Returns:
+        bool: True if overwrite succeeded, False otherwise
+    """
+    success = True
+
+    # Save current tracker state
+    original_index = tracker._index
+    original_offset = tracker._offset
+
+    # Get the contributions for this piece
+    contributions = tracker.advance(piece_length)
+
+    # Calculate offsets for each contribution
+    current_index = original_index
+    current_offset = original_offset
+
+    for file_path, size in contributions:
+        if not file_path.exists():
+            writer.write(f"Cannot overwrite missing file: {file_path}")
+            success = False
+            current_index += 1
+            current_offset = 0
+            continue
+
+        try:
+            if dry_run:
+                writer.write(f"Would overwrite {size} bytes at offset {current_offset} in {file_path} with zeros")
+            else:
+                with file_path.open("r+b") as f:
+                    f.seek(current_offset)
+                    f.write(b"\x00" * size)
+                    writer.write(f"Overwrote {size} bytes at offset {current_offset} in {file_path} with zeros")
+        except OSError as e:
+            writer.write(f"Error overwriting file {file_path}: {e}")
+            success = False
+
+        # Move to next file if we consumed the entire remaining portion
+        file_size = file_path.stat().st_size
+        if current_offset + size >= file_size:
+            current_index += 1
+            current_offset = 0
+        else:
+            current_offset += size
+
+    return success
 
 
 def _report_hash_mismatch(report: HashMismatchReport) -> None:

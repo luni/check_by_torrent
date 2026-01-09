@@ -51,6 +51,11 @@ def parse_args() -> argparse.Namespace:
         const="incomplete.",
         help="Rename corrupted files with prefix (default: incomplete.$file)",
     )
+    parser.add_argument(
+        "--overwrite-empty-pieces",
+        action="store_true",
+        help="Overwrite pieces with zeros when they should be empty (not downloaded) but contain data",
+    )
     return parser.parse_args()
 
 
@@ -78,6 +83,7 @@ def main() -> None:
             restore_incomplete=args.restore_incomplete,
             dry_run=args.dry_run,
             no_progress=args.no_progress,
+            overwrite_empty_pieces=args.overwrite_empty_pieces,
         )
         success = verify_torrent(
             torrent_path,

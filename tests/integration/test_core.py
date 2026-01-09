@@ -25,6 +25,23 @@ def test_verify_torrent_missing_file(single_file_torrent: tuple[Path, Path]) -> 
     assert verify_torrent(str(torrent_path), file_path.parent) is False
 
 
+def test_verify_torrent_missing_file_with_continue_on_error(single_file_torrent: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
+    """Test verify_torrent with --continue-on-error should handle missing files gracefully."""
+    torrent_path, file_path = single_file_torrent
+    file_path.unlink()  # Delete the file
+
+    # Should continue despite missing file and return False (due to missing files)
+    result = verify_torrent(str(torrent_path), file_path.parent, VerificationOptions(continue_on_error=True))
+    assert result is False
+
+    combined = "".join(capsys.readouterr())
+    # Should report the missing file
+    assert "Error: The following files are missing:" in combined
+    assert str(file_path) in combined
+    # Should mention continuing despite missing files
+    assert "Continuing despite missing files" in combined
+
+
 def _build_overlapping_piece_fixture(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
     """Create a torrent whose piece spans multiple files."""
     piece_length = 8

@@ -96,6 +96,33 @@ def test_pieces_generator_missing_piece_length() -> None:
         next(generator)
 
 
+def test_pieces_generator_with_missing_files(temp_dir: Path) -> None:
+    """pieces_generator should treat missing files as zero bytes when missing_files is provided."""
+    piece_length = 8
+    file_data = b"Hello World"  # 11 bytes, will span 2 pieces: 8 + 3
+    missing_file = temp_dir / "missing.txt"
+
+    info = {
+        b"name": b"test",
+        b"piece length": piece_length,
+        b"length": len(file_data),
+        b"pieces": hashlib.sha1(file_data).digest(),
+    }
+
+    # Create resolved files list with the missing file
+    resolved_files = [(missing_file, len(file_data))]
+    missing_files = {missing_file}
+
+    # Generate pieces - should treat missing file as zeros
+    generator = pieces_generator(info, resolved_files=resolved_files, missing_files=missing_files)
+    pieces = list(generator)
+
+    # Should generate two pieces of zeros (8 bytes + 3 bytes)
+    expected_pieces = [b"\x00" * 8, b"\x00" * 3]
+    assert len(pieces) == 2
+    assert pieces == expected_pieces
+
+
 def test_prepare_context_display_length_excludes_padding(tmp_path: Path) -> None:
     """Verification context display length should exclude BEP47 padding bytes."""
 

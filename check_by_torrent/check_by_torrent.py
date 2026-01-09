@@ -251,13 +251,14 @@ def get_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> File
         raise TorrentError("Invalid torrent info") from e
 
 
-def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, resolved_files: FileList | None = None) -> Generator[bytes, None, None]:
+def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, resolved_files: FileList | None = None, missing_files: set[Path] | None = None) -> Generator[bytes, None, None]:
     """Generate pieces from downloaded file(s) based on torrent info.
 
     Args:
         info: The 'info' dictionary from the torrent file
         alt_file: Alternative file or directory path to use instead of the one in the torrent
         resolved_files: Pre-resolved file list (if None, will use get_files to resolve)
+        missing_files: Set of file paths that are missing and should be treated as zeros
 
     Yields:
         bytes: The next piece of data from the file(s)
@@ -271,11 +272,27 @@ def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, 
         piece = bytearray()
         files = resolved_files if resolved_files is not None else get_files(info, alt_file)
         padding_files = _get_padding_files(info, alt_file)
+        if missing_files is None:
+            missing_files = set()
 
         for file_path, file_size in files:
 
             if file_path in padding_files:
                 remaining_in_file = padding_files.get(file_path, file_size)
+                while remaining_in_file > 0:
+                    remaining = piece_length - len(piece)
+                    chunk_len = min(remaining, remaining_in_file)
+                    piece.extend(b"\x00" * chunk_len)
+                    remaining_in_file -= chunk_len
+
+                    if len(piece) == piece_length:
+                        yield bytes(piece)
+                        piece = bytearray()
+                continue
+
+            # Handle missing files by treating them as zero bytes
+            if file_path in missing_files:
+                remaining_in_file = file_size
                 while remaining_in_file > 0:
                     remaining = piece_length - len(piece)
                     chunk_len = min(remaining, remaining_in_file)
@@ -619,7 +636,7 @@ def _verify_pieces_with_context(
     reported_hash_mismatches: set[Path] = set()  # Track files that already had hash mismatches reported
     piece_length = int(context.info[b"piece length"])
     total_pieces = len(context.piece_hashes)
-    piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track)
+    piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track, missing_files=piece_options.missing_files)
 
     for i, expected_hash in enumerate(context.piece_hashes):
         expected_piece_len = _piece_length_for_index(piece_length, context.total_length, i, total_pieces)
@@ -672,7 +689,7 @@ def _verify_pieces_with_context(
                 if overwrite_success and not piece_options.dry_run:
                     # Re-read the piece after overwriting
                     try:
-                        piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track)
+                        piece_data = pieces_generator(context.info, alt_path, resolved_files=files_to_track, missing_files=piece_options.missing_files)
                         # Skip to the current piece
                         for _ in range(i):
                             next(piece_data)

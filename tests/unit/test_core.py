@@ -8,8 +8,8 @@ import pytest
 
 from check_by_torrent.check_by_torrent import (
     TorrentError,
-    _prepare_verification_context,
     _is_piece_at_file_end,
+    _prepare_verification_context,
     calculate_total_length,
     get_files,
     human_readable_size,
@@ -120,7 +120,36 @@ def test_pieces_generator_with_missing_files(temp_dir: Path) -> None:
 
     # Should generate two pieces of zeros (8 bytes + 3 bytes)
     expected_pieces = [b"\x00" * 8, b"\x00" * 3]
-    assert len(pieces) == 2
+    expected_pieces_count = 2
+    assert len(pieces) == expected_pieces_count
+    assert pieces == expected_pieces
+
+
+def test_piece_generator_with_padding(temp_dir: Path) -> None:
+    """Test pieces_generator with padding files."""
+    # Constants for test values
+    expected_pieces_count = 2
+    zero_byte = b"\x00"
+
+    test_file = temp_dir / "test.txt"
+    test_file.write_bytes(b"hello")
+
+    # Create torrent info with padding
+    info = {
+        b"name": b"test",
+        b"piece length": 8,
+        b"pieces": b"\x00" * 20 + b"\x00" * 20,  # Two pieces of zeros
+        b"files": [
+            {b"length": 5, b"path": [b"test.txt"]},
+            {b"length": 6, b"path": [b"_____padding_file_1"], b"attr": b"p"},  # 6 bytes padding
+        ],
+    }
+
+    pieces = list(pieces_generator(info, temp_dir))
+
+    # Should generate two pieces: "hello" + 3 zeros, then 3 zeros
+    expected_pieces = [b"hello" + zero_byte * 3, zero_byte * 3]
+    assert len(pieces) == expected_pieces_count
     assert pieces == expected_pieces
 
 

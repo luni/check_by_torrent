@@ -145,6 +145,13 @@ class TorrentError(Exception):
     pass
 
 
+def _is_piece_at_file_end(file_path: Path, offset: int, size: int, file_size: int) -> bool:
+    """Check if a piece at the given offset and size is at the end of the file."""
+    if not file_path.exists() or offset < 0 or size < 0 or file_size < 0:
+        return False
+    return offset + size == file_size
+
+
 def _coerce_path(path_value: BytesOrStrPath) -> Path:
     """Convert bytes/str/PathLike inputs to a Path."""
 
@@ -251,7 +258,9 @@ def get_files(info: TorrentInfo, alt_file: BytesOrStrPath | None = None) -> File
         raise TorrentError("Invalid torrent info") from e
 
 
-def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, resolved_files: FileList | None = None, missing_files: set[Path] | None = None) -> Generator[bytes, None, None]:
+def pieces_generator(  # noqa: PLR0912
+    info: TorrentInfo, alt_file: BytesOrStrPath | None = None, resolved_files: FileList | None = None, missing_files: set[Path] | None = None
+) -> Generator[bytes, None, None]:
     """Generate pieces from downloaded file(s) based on torrent info.
 
     Args:
@@ -276,7 +285,6 @@ def pieces_generator(info: TorrentInfo, alt_file: BytesOrStrPath | None = None, 
             missing_files = set()
 
         for file_path, file_size in files:
-
             if file_path in padding_files:
                 remaining_in_file = padding_files.get(file_path, file_size)
                 while remaining_in_file > 0:
@@ -618,7 +626,7 @@ def _report_missing_files(pbar: Union[tqdm, "SimpleProgress"], missing_files: li
         pbar.write(f"  - {path}")
 
 
-def _verify_pieces_with_context(
+def _verify_pieces_with_context(  # noqa: PLR0912, PLR0915
     context: VerificationContext,
     alt_path: BytesOrStrPath | None,
     pbar: Union[tqdm, "SimpleProgress"],
@@ -646,11 +654,7 @@ def _verify_pieces_with_context(
         _update_progress_postfix(pbar, piece_paths)
 
         # Skip verification for pieces that involve missing files when continuing on error
-        if (
-            piece_options.missing_files
-            and piece_options.continue_on_hash_mismatch
-            and any(path in piece_options.missing_files for path in piece_paths)
-        ):
+        if piece_options.missing_files and piece_options.continue_on_hash_mismatch and any(path in piece_options.missing_files for path in piece_paths):
             bytes_processed += expected_piece_len
             pbar.update(physical_piece_len)
             continue
@@ -682,9 +686,7 @@ def _verify_pieces_with_context(
                 temp_tracker._offset = tracker._offset
 
                 writer.write(f"\nOverwriting piece {i} with zeros (should be empty but contains data)")
-                overwrite_success = _overwrite_piece_with_zeros(
-                    temp_tracker, expected_piece_len, writer, piece_options.dry_run
-                )
+                overwrite_success = _overwrite_piece_with_zeros(temp_tracker, expected_piece_len, writer, piece_options.dry_run)
 
                 if overwrite_success and not piece_options.dry_run:
                     # Re-read the piece after overwriting
@@ -784,25 +786,6 @@ def _is_zero_piece_hash(piece_hash: bytes, piece_length: int) -> bool:
     return hashlib.sha1(zero_data).digest() == piece_hash
 
 
-def _is_piece_at_file_end(file_path: Path, offset: int, size: int, file_size: int) -> bool:
-    """Check if a piece region is at the end of the file.
-
-    Args:
-        file_path: Path to the file
-        offset: Starting offset of the piece in the file
-        size: Size of the piece region in this file
-        file_size: Total size of the file
-
-    Returns:
-        True if the piece region extends to or beyond the current file end
-    """
-    if not file_path.exists():
-        return False
-
-    current_size = file_path.stat().st_size
-    return offset + size >= current_size
-
-
 def _overwrite_piece_with_zeros(
     tracker: PieceFileTracker,
     piece_length: int,
@@ -843,24 +826,11 @@ def _overwrite_piece_with_zeros(
 
         try:
             if dry_run:
-                # Check if we can use sparse file approach
-                if _is_piece_at_file_end(file_path, current_offset, size, file_path.stat().st_size):
-                    writer.write(f"Would create sparse hole in {file_path} from offset {current_offset} (sparse file optimization)")
-                else:
-                    writer.write(f"Would overwrite {size} bytes at offset {current_offset} in {file_path} with zeros")
+                writer.write(f"Would overwrite {size} bytes at offset {current_offset} in {file_path} with zeros")
             else:
-                # Check if we can use sparse file approach
-                if _is_piece_at_file_end(file_path, current_offset, size, file_path.stat().st_size):
-                    # Use sparse file approach - truncate to create a hole
-                    with file_path.open("r+b") as f:
-                        f.seek(current_offset + size)
-                        f.truncate()
-                    writer.write(f"Created sparse hole in {file_path} from offset {current_offset} (sparse file optimization)")
-                else:
-                    # Traditional approach - write zeros
-                    with file_path.open("r+b") as f:
-                        f.seek(current_offset)
-                        f.write(b"\x00" * size)
+                with file_path.open("r+b") as f:
+                    f.seek(current_offset)
+                    f.write(b"\x00" * size)
                     writer.write(f"Overwrote {size} bytes at offset {current_offset} in {file_path} with zeros")
         except OSError as e:
             writer.write(f"Error overwriting file {file_path}: {e}")

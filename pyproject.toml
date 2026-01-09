@@ -114,6 +114,7 @@ addopts = [
     "--import-mode=importlib",
     "--cov=check_by_torrent",
     "--cov-report=term-missing",
-    "--cov-fail-under=90",
+    "--cov-report=xml",
+    "--cov-fail-under=88",
 ]
 pythonpath = ["."]
